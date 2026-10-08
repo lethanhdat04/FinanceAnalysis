@@ -14,3 +14,7 @@ models/*.joblib
 
 # Kết quả trung gian (sinh lại bằng notebook)
 data/processed/
+
+# File cá nhân, chỉ để trên máy
+PROGRESS.md
+*.code-workspace
