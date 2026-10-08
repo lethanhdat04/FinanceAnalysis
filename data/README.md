@@ -11,3 +11,8 @@ Lưu ý khi đọc:
 - AMOUNT có dạng kế toán `$(121.52)` = số âm, có dấu phẩy ngăn cách hàng nghìn.
 - Ngày theo định dạng `%d-%b-%y` (ví dụ 30-Jun-26).
 
+## Nhóm chi phí
+
+`mcc_groups.csv`: bảng gom 429 mã MCC thành 16 nhóm (14 nhóm chi phí + Khác + Chưa xác định).
+Sinh bởi `scripts/build_mcc_groups.py`; gán cho giao dịch bằng `src/labels.py::add_expense_group`.
+Giao dịch Amazon có MCC 'BOOK STORES' được chuyển sang nhóm Chưa xác định (RETAIL_GENERAL) và không dùng làm nhãn huấn luyện.
