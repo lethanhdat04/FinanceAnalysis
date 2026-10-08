@@ -1,0 +1,16 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Mô hình đã huấn luyện (sinh lại bằng notebooks/02_classification.ipynb)
+models/*.joblib
+
+# File khóa tạm của Word / Excel
+~$*
+
+# Kết quả trung gian (sinh lại bằng notebook)
+data/processed/
