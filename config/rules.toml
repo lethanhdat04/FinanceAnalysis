@@ -1,0 +1,55 @@
+# Cấu hình rule engine (src/rules.py).
+# Dữ liệu công khai không có hạn mức/ngân sách thật, nên các ngưỡng dưới đây là GIẢ ĐỊNH,
+# được chọn dựa trên kết quả khám phá dữ liệu (notebooks/01_eda.ipynb) để số cảnh báo ở mức kiểm tra được.
+# Mức độ: "Cao" | "Trung bình" | "Thấp".
+
+[R01]  # Thiếu chứng từ: mô tả mặt hàng chung chung ("GENERAL PURCHASE"...) với khoản chi lớn
+min_amount = 1000
+severity = "Trung bình"
+
+[R02]  # Vượt hạn mức phê duyệt cho một giao dịch
+limit = 5000
+severity = "Cao"
+
+[R03]  # Trùng hóa đơn: cùng người chi + cửa hàng + số tiền trong vài ngày
+window_days = 3
+min_amount = 100
+# Tiền phòng tính theo đêm và vé máy bay mua cho cả đoàn là trùng hợp lệ (xem EDA mục 6)
+exclude_item_desc = ["ROOM CHARGES", "AIR TRAVEL"]
+# Khách sạn/hãng bay ghi mô tả "GENERAL PURCHASE" cũng là tiền phòng theo đêm / vé đoàn
+exclude_groups = ["LODGING", "AIR_TRAVEL"]
+severity = "Cao"
+
+[R04]  # Chia nhỏ giao dịch để né hạn mức
+limit = 5000
+window_days = 3
+min_each = 1000
+severity = "Cao"
+
+[R05]  # Vượt ngân sách tháng của đơn vị theo nhóm chi phí (data/reference/budgets.csv)
+warn_ratio = 0.9
+severity_warn = "Thấp"        # giao dịch làm lũy kế vượt 90%
+severity_over = "Cao"         # giao dịch làm lũy kế vượt 100%
+# Giao dịch phát sinh thêm khi đã vượt 100%: chỉ ghi chú. Nếu để "Trung bình" thì ~8,5% giao dịch
+# bị đưa vào "Cần review" chỉ vì rơi vào tháng đã vượt ngân sách (đã thử, xem notebooks/03_rules.ipynb).
+severity_after = "Thấp"
+
+[R06]  # Giao dịch tương đương tiền mặt
+mcc = ["WIRE TRANSFER MONEY ORDERS", "POI FUNDING TRANSACTIONS EXCLUDING MONEYSEND"]
+severity = "Trung bình"
+
+[R07]  # Cửa hàng chưa có trong danh sách đã duyệt (data/reference/approved_merchants.csv)
+start_month = "2026-01"  # trước tháng này là giai đoạn lập danh sách
+min_amount = 500
+severity = "Trung bình"
+
+[R08]  # Loại chi phí không được phép
+banned_mcc_pattern = "PACKAGE STORES|DRINKING PLACES|CIGAR|MASSAGE|JEWELRY|PRECIOUS STONES|BETTING|GAMBLING"
+severity = "Cao"
+# Khách sạn có casino: thường là lưu trú công tác hợp lệ, chỉ cần lưu ý
+casino_pattern = "CASINO"
+severity_casino = "Trung bình"
+
+[R09]  # Giao dịch cuối tuần / ngày lễ liên bang Mỹ
+include_holidays = true
+severity = "Thấp"
