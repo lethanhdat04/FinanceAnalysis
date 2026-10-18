@@ -118,3 +118,10 @@ def test_r09_weekend_and_federal_holiday():
 def test_risk_level(rows, expected):
     df = make(rows)
     assert risk_level(df, run_rules(df, CFG)).iloc[0] == expected
+
+
+def test_combine_risk_anomaly_raises_to_review_only():
+    from src.risk import combine_risk
+    rule = pd.Series(['Bình thường', 'Bình thường', 'Cần review', 'Cảnh báo cao'])
+    flag = pd.Series([False, True, True, True])
+    assert combine_risk(rule, flag).tolist() == ['Bình thường', 'Cần review', 'Cần review', 'Cảnh báo cao']
