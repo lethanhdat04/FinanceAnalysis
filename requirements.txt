@@ -7,3 +7,7 @@ ipykernel
 openpyxl
 pytest
 shap
+groq
+python-dotenv
+fastembed
+rank-bm25

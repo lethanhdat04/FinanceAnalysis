@@ -18,3 +18,9 @@ data/processed/
 # File cá nhân, chỉ để trên máy
 PROGRESS.md
 *.code-workspace
+
+# Model embedding tải về (fastembed)
+.cache/
+
+# Khóa API
+.env
