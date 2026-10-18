@@ -6,3 +6,4 @@ jupyter
 ipykernel
 openpyxl
 pytest
+shap
