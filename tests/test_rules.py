@@ -125,3 +125,34 @@ def test_combine_risk_anomaly_raises_to_review_only():
     rule = pd.Series(['Bình thường', 'Bình thường', 'Cần review', 'Cảnh báo cao'])
     flag = pd.Series([False, True, True, True])
     assert combine_risk(rule, flag).tolist() == ['Bình thường', 'Cần review', 'Cần review', 'Cảnh báo cao']
+
+
+def _group_order_trap():
+    """Bẫy thứ tự nhóm: người chi A chỉ mua ở WILEY nên WILEY được pandas đánh số trước ELSEVIER;
+    với người chi B (mua ở cả hai), groupby(nhiều khóa).rolling trả nhóm (B, WILEY) trước (B, ELSEVIER),
+    ngược với thứ tự dòng đầu vào -> ghép theo vị trí bị lệch (lỗi thật ở R04, 1.719 giao dịch bị gắn cờ sai)."""
+    return make([
+        {'cardholder_id': 'A|A|A', 'merchant_norm': 'WILEY', 'amount': 1200, 'tx_date': '2026-03-02'},
+        {'cardholder_id': 'B|B|B', 'merchant_norm': 'ELSEVIER INC', 'amount': 4000, 'tx_date': '2026-03-02'},
+        {'cardholder_id': 'B|B|B', 'merchant_norm': 'ELSEVIER INC', 'amount': 3000, 'tx_date': '2026-03-03'},
+        {'cardholder_id': 'B|B|B', 'merchant_norm': 'WILEY', 'amount': 1500, 'tx_date': '2026-03-04'},
+    ])
+
+
+def test_window_stats_is_robust_to_pandas_group_order():
+    from src.window import window_stats
+    w = window_stats(_group_order_trap(), ['cardholder_id', 'merchant_norm'], 3)
+    assert w['count'].tolist() == [1, 1, 2, 1]
+    assert w['total'].tolist() == [1200, 4000, 7000, 1500]
+
+
+def test_r04_flags_the_right_transaction_despite_group_order():
+    h = rule_hits(_group_order_trap(), 'R04')
+    assert h.txn_id.tolist() == ['t2'] and h.related_txn_ids.iloc[0] == 't1'
+
+
+def test_r04_single_transaction_never_flagged_among_many_groups():
+    rows = [{'cardholder_id': f'A|P{i % 7}|J', 'merchant_norm': f'M{i % 5}', 'amount': 1500,
+             'tx_date': f'2026-03-{1 + (i * 3) % 28:02d}'} for i in range(60)]
+    hits = rule_hits(make(rows), 'R04')
+    assert all(int(m.split()[0]) >= 2 for m in hits.message)

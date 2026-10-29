@@ -11,6 +11,7 @@ import pandas as pd
 from pandas.tseries.holiday import USFederalHolidayCalendar
 
 from src.features import GENERIC_DESC
+from src.window import window_stats
 
 ROOT = Path(__file__).resolve().parents[1]
 CONFIG_FILE = ROOT / 'config' / 'rules.toml'
@@ -89,13 +90,8 @@ def r04_split(df, cfg):
     d = df[(df['amount'] >= c['min_each']) & (df['amount'] < c['limit'])].sort_values(keys + ['tx_date', 'txn_id'])
     if d.empty:
         return pd.DataFrame(columns=HIT_COLUMNS)
-    window = f'{c["window_days"]}D'
-    # d đã sắp theo keys nên các nhóm liền nhau; với sort=False, kết quả rolling giữ đúng thứ tự dòng của d
-    # (pandas 3 thay chỉ số gốc bằng cột `on`, nên phải ghép lại theo vị trí).
-    roll = d.groupby(keys, sort=False, dropna=False).rolling(window, on='tx_date')['amount']
-    total = pd.Series(roll.sum().to_numpy(), index=d.index)
-    count = pd.Series(roll.count().to_numpy(), index=d.index)
-    flagged = d.loc[(count >= 2) & (total >= c['limit'])]
+    w = window_stats(d, keys, c['window_days'])
+    flagged = d.loc[(w['count'] >= 2) & (w['total'] >= c['limit'])]
     if flagged.empty:
         return pd.DataFrame(columns=HIT_COLUMNS)
 
@@ -104,9 +100,10 @@ def r04_split(df, cfg):
     for idx, r in flagged.iterrows():
         grp = by_group[(r['cardholder_id'], r['merchant_norm'])]
         start = r['tx_date'] - pd.Timedelta(days=c['window_days'])
-        win = grp[(grp['tx_date'] > start) & (grp['tx_date'] <= r['tx_date'])]
+        # Cùng cửa sổ với điều kiện gắn cờ: các giao dịch trước đó (theo ngày, rồi txn_id) và chính giao dịch này
+        win = grp[(grp['tx_date'] > start) & ((grp['tx_date'] < r['tx_date'])
+                                               | ((grp['tx_date'] == r['tx_date']) & (grp['txn_id'] <= r['txn_id'])))]
         others = win[win['txn_id'] != r['txn_id']]['txn_id']
-        # Số lượng và tổng tính trên cả cửa sổ (kể cả giao dịch cùng ngày ghi sau) để khớp với danh sách liên quan.
         msgs.append(f'{len(win)} giao dịch cùng người chi tại cùng cửa hàng trong {c["window_days"]} ngày, '
                     f'mỗi khoản dưới hạn mức nhưng tổng {money(win["amount"].sum())} vượt hạn mức {money(c["limit"])}.')
         related.append(','.join(others))

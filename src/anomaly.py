@@ -7,6 +7,8 @@ import numpy as np
 import pandas as pd
 from sklearn.ensemble import IsolationForest
 
+from src.window import window_stats
+
 MIN_HISTORY = 3      # số giao dịch trước đó tối thiểu để tính độ lệch so với thói quen
 STD_FLOOR = 0.25     # độ lệch chuẩn tối thiểu (thang log10), tránh z-score phóng đại khi lịch sử quá đều
 
@@ -96,9 +98,7 @@ def build_features(df: pd.DataFrame) -> pd.DataFrame:
     f['round_amount'] = ((d['amount'] >= 100) & (d['amount'] % 100 == 0)).astype(int)
 
     # Số giao dịch của người chi trong 7 ngày gần nhất (tính cả giao dịch hiện tại)
-    s = d.sort_values(['cardholder_id', 'tx_date', 'txn_id'])
-    cnt = s.groupby('cardholder_id', sort=False).rolling('7D', on='tx_date')['amount'].count()
-    f['n_last_7d'] = pd.Series(cnt.to_numpy(), index=s.index)
+    f['n_last_7d'] = window_stats(d, ['cardholder_id'], 7)['count']
     f['log_n_last_7d'] = np.log1p(f['n_last_7d'])
 
     return f.reindex(df.index[df['amount'] > 0])
