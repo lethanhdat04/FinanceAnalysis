@@ -9,7 +9,7 @@ import uuid
 from datetime import datetime
 from pathlib import Path
 
-from src.llm import MODEL_EXPLAIN, get_client
+from src.llm import MODEL_EXPLAIN, chat, get_client
 
 ROOT = Path(__file__).resolve().parents[1]
 REVIEW_FILE = ROOT / 'data' / 'processed' / 'review_requests.jsonl'
@@ -98,8 +98,8 @@ class Assistant:
         self.messages.append({'role': 'user', 'content': question})
         trace = []
         for _ in range(MAX_STEPS):
-            resp = self.client.chat.completions.create(model=self.model, messages=self.messages, tools=TOOLS,
-                                                       tool_choice='auto', temperature=0.2)
+            resp = chat(self.client, model=self.model, messages=self.messages, tools=TOOLS,
+                        tool_choice='auto', temperature=0.2)
             msg = resp.choices[0].message
             calls = msg.tool_calls or []
             self.messages.append({'role': 'assistant', 'content': msg.content or '',

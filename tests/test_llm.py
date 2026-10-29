@@ -65,6 +65,7 @@ def test_explain_case_keeps_risk_from_code_and_limits_citations_to_retrieved():
     assert out['risk']['final_level'] == 'Cảnh báo cao'
     schema = client.sent[0]['response_format']['json_schema']['schema']
     assert schema['properties']['citations']['items']['properties']['article_id']['enum'] == ['D05', 'D26']
+    assert schema['properties']['reasons']['items']['properties']['ref']['enum'] == ['R04', '']   # chỉ rule có trong hồ sơ
     assert out['warnings'] == []
 
 

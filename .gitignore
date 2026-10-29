@@ -13,7 +13,9 @@ models/*.joblib
 ~$*
 
 # Kết quả trung gian (sinh lại bằng notebook)
-data/processed/
+data/processed/*
+!data/processed/llm_runs/
+data/processed/llm_runs/log_*.txt
 
 # File cá nhân, chỉ để trên máy
 PROGRESS.md
