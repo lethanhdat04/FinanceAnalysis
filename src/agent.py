@@ -11,19 +11,21 @@ Ràng buộc:
 - Mức rủi ro và vi phạm do code quyết định, agent không thay đổi.
 """
 import json
+import re
 import time
 
 import pandas as pd
 
 from src.labels import GROUPS
-from src.llm import MODEL_EXPLAIN, chat, check_number_pairs, get_client, llm_view, validate_explanation
+from src.llm import MODEL_EXPLAIN, chat, check_numbers, check_rule_mentions, get_client, llm_view, validate_explanation
 
 MAX_TOOL_CALLS = 8
 MAX_ROWS = 25
 # Bản miễn phí của Groq giới hạn 8.000 token/phút cho MỘT request -> giữ mọi request nhỏ hơn mức này.
 TOOL_RESULT_CHARS = 1500     # kết quả công cụ đưa lại cho agent trong vòng tra cứu
 DIGEST_CHARS = 900           # mỗi kết quả trong bản tóm lược bằng chứng khi viết hồ sơ
-MAX_ARTICLES = 6             # số điều quy chế tối đa gửi kèm khi viết hồ sơ
+MAX_ARTICLES = 6             # số điều quy chế tối đa gửi kèm khi viết hồ sơ (điều bắt buộc luôn được giữ)
+TXN_ID = re.compile(r'"txn_id": "([^"]+)"|\b(\d{6}-\d{6})\b')
 
 SYSTEM = """Bạn là agent điều tra hỗ trợ kế toán kiểm tra một hồ sơ giao dịch thẻ mua sắm đã bị hệ thống cảnh báo.
 Nhiệm vụ: thu thập bằng chứng bằng các công cụ CHỈ ĐỌC, rồi lập hồ sơ điều tra để kế toán quyết định.
@@ -162,11 +164,23 @@ class InvestigationAgent:
                                              'why': {'type': 'string'}},
             'required': ['check', 'tool', 'why'], 'additionalProperties': False}}},
             'required': ['plan'], 'additionalProperties': False}
-        msg = call(messages=[{'role': 'system', 'content': SYSTEM},
-                             {'role': 'user', 'content': f'HỒ SƠ:\n{case_text}\n\nLập kế hoạch điều tra (tối đa 6 bước).'}],
-                   reasoning_effort='low',
-                   response_format={'type': 'json_schema', 'json_schema': {'name': 'plan', 'strict': True, 'schema': plan_schema}})
-        plan = json.loads(msg.content)['plan'][:6]
+        plan = []
+        for _ in range(2):
+            try:
+                msg = call(messages=[{'role': 'system', 'content': SYSTEM},
+                                     {'role': 'user', 'content': f'HỒ SƠ:\n{case_text}\n\nLập kế hoạch điều tra (tối đa 6 bước).'}],
+                           reasoning_effort='low',
+                           response_format={'type': 'json_schema', 'json_schema': {'name': 'plan', 'strict': True,
+                                                                                     'schema': plan_schema}})
+                plan = json.loads(msg.content or '')['plan'][:6]
+                break
+            except (json.JSONDecodeError, KeyError, TypeError):
+                continue
+            except RuntimeError:
+                raise
+            except Exception as ex:
+                if 'json_validate_failed' not in str(ex):
+                    raise
         emit('plan', plan)
 
         # 2. Điều tra bằng công cụ
@@ -184,14 +198,15 @@ class InvestigationAgent:
                 break
             for c in calls[: self.max_tool_calls - n_calls]:
                 n_calls += 1
-                s0 = time.time()
+                s0, args = time.time(), {}
                 try:
                     args = json.loads(c.function.arguments or '{}')
                     result = self.tool(c.function.name, args, chunks)
                 except Exception as ex:                    # lỗi công cụ trả lại cho agent
-                    args, result = locals().get('args', {}), {'error': str(ex)}
+                    result = {'error': str(ex)}
                 text = json.dumps(result, ensure_ascii=False, default=str)
-                known_ids |= {r['txn_id'] for r in _iter_dicts(result) if isinstance(r, dict) and 'txn_id' in r}
+                # chỉ mã giao dịch nằm trong phần kết quả đưa cho LLM (kết quả dài bị cắt ở TOOL_RESULT_CHARS)
+                known_ids |= {a or b for a, b in TXN_ID.findall(text[:TOOL_RESULT_CHARS])}
                 trace.append({'step': n_calls, 'tool': c.function.name, 'label': TOOL_LABELS.get(c.function.name, c.function.name),
                               'args': args, 'result_preview': text[:300], 'error': result.get('error') if isinstance(result, dict) else None,
                               'seconds': round(time.time() - s0, 2)})
@@ -204,37 +219,57 @@ class InvestigationAgent:
         # 3. Viết hồ sơ điều tra từ bản tóm lược bằng chứng (không gửi lại cả hội thoại), kiểm chứng, sửa một vòng
         required = [c.id for c in self.retriever.required_for(
             [h['rule_id'] for h in case['rule_hits']], case['anomaly']['signals'], [case['expense_group']['group']])]
-        order = required + [i for i in chunks if i not in required]
-        chunks = {i: chunks[i] for i in order[:MAX_ARTICLES]}
+        optional = [i for i in chunks if i not in required]
+        order = required + optional[:max(0, MAX_ARTICLES - len(required))]
+        if not order:                              # nhóm chi phí không có điều riêng, không rule, không tín hiệu
+            found = self.retriever.search(self.engine.retrieval_query(case), k=3)
+            chunks.update({c.id: c for c in found})
+            order = [c.id for c in found]
+        chunks = {i: chunks[i] for i in order}
         schema = report_schema(sorted(known_ids), sorted(chunks), allowed_actions)
         actions_text = ', '.join(f'{a} ({(action_labels or {}).get(a, a)})' for a in allowed_actions) or 'không có'
         notes = next((m['content'] for m in reversed(messages) if m['role'] == 'assistant' and m.get('content')), '')
-        messages = [{'role': 'system', 'content': SYSTEM}, {'role': 'user', 'content': (
-            f'HỒ SƠ:\n{case_text}\n\nBẰNG CHỨNG ĐÃ TRA CỨU:\n' + '\n'.join(digest)
+        evidence_texts = list(digest)
+
+        def report_messages(dchars: int) -> list:
+            return [{'role': 'system', 'content': SYSTEM}, {'role': 'user', 'content': (
+            f'HỒ SƠ:\n{case_text}\n\nBẰNG CHỨNG ĐÃ TRA CỨU:\n' + '\n'.join(d[:dchars] for d in digest)
             + (f'\n\nGHI CHÚ CỦA AGENT:\n{notes[:800]}' if notes else '') + '\n\n'
             'Lập hồ sơ điều tra bằng tiếng Việt. Bằng chứng chỉ dùng mã giao dịch đã thấy. Trích dẫn là MỘT câu nguyên văn '
             f'trong các điều quy chế: {", ".join(sorted(chunks))}. Các thao tác hợp lệ của hồ sơ: {actions_text}; '
             'chọn khong_de_xuat nếu chưa đủ căn cứ. Giữ nguyên cặp số liệu như trong công cụ, không tự tính.\n\nĐIỀU QUY CHẾ:\n'
             + '\n\n'.join(f'[{c.id}] {c.title}\n{c.text}' for c in chunks.values()))}]
+
+        dchars = DIGEST_CHARS
+        messages = report_messages(dchars)
         report, revisions, warnings = None, 0, []
         emit('writing', None)
         for attempt in range(2):
-            msg = None
-            for _ in range(2):                    # đầu ra bị cắt / không khớp schema -> yêu cầu viết ngắn hơn
+            report = None
+            for _ in range(3):
+                # đầu ra bị cắt / rỗng / không khớp schema -> yêu cầu viết ngắn hơn;
+                # request vượt giới hạn token (413) -> thu gọn bằng chứng rồi gửi lại (giữ các lượt tra cứu đã làm)
                 try:
                     msg = call(messages=messages, reasoning_effort='medium', max_completion_tokens=3000,
                                response_format={'type': 'json_schema', 'json_schema': {'name': 'investigation', 'strict': True,
                                                                                          'schema': schema}})
+                    report = json.loads(msg.content or '')
                     break
+                except RuntimeError:
+                    raise
                 except Exception as ex:
-                    if 'json_validate_failed' not in str(ex):
+                    too_large = '413' in str(ex) or 'too large' in str(ex).lower()
+                    if not (too_large or 'json_validate_failed' in str(ex) or isinstance(ex, json.JSONDecodeError)):
                         raise
-                    messages.append({'role': 'user', 'content': 'Hồ sơ quá dài và bị cắt. Viết ngắn gọn hơn: tối đa 4 phát hiện, '
-                                                                'mỗi phát hiện 1-2 câu, mỗi phát hiện tối đa 5 mã giao dịch.'})
-            if msg is None:
+                    if too_large:
+                        dchars //= 2
+                        messages = report_messages(dchars) + messages[2:]
+                    else:
+                        messages.append({'role': 'user', 'content': 'Hồ sơ quá dài và bị cắt. Viết ngắn gọn hơn: tối đa 4 '
+                                                                    'phát hiện, mỗi phát hiện 1-2 câu, tối đa 5 mã giao dịch.'})
+            if report is None:
                 raise RuntimeError('Agent không lập được hồ sơ hợp lệ sau khi yêu cầu viết ngắn hơn')
-            report = json.loads(msg.content)
-            warnings = self.validate(report, case, list(chunks.values()))
+            warnings = self.validate(report, case, list(chunks.values()), evidence_texts)
             if not warnings or attempt == 1:
                 break
             revisions += 1
@@ -245,12 +280,16 @@ class InvestigationAgent:
                 'articles': {c.id: {'title': c.title, 'text': c.text} for c in chunks.values()},
                 'model': self.model, 'latency_s': round(time.time() - t0, 2), 'usage': usage}
 
-    def validate(self, report: dict, case: dict, chunks) -> list[str]:
-        """Kiểm chứng bằng code: trích dẫn nguyên văn, cặp số liệu, có bằng chứng cho từng phát hiện."""
-        tmp = {'citations': report['citations'], 'reasons': [], 'summary': report['summary']}
+    def validate(self, report: dict, case: dict, chunks, evidence_texts=()) -> list[str]:
+        """Kiểm chứng bằng code: trích dẫn nguyên văn, số liệu (đối chiếu hồ sơ, quy chế và kết quả tra cứu), mã rule,
+        có bằng chứng cho từng phát hiện."""
+        tmp = {'citations': report['citations'], 'reasons': [], 'summary': ''}
         warnings = [w for w in validate_explanation(tmp, chunks, case) if 'Không có trích dẫn' not in w]
-        texts = [report['summary']] + [f['text'] for f in report['findings']]
-        warnings += [w for w in check_number_pairs(texts, case, [c.text for c in chunks]) if w not in warnings]
+        d = report['draft_review_request']
+        texts = ([report['summary']] + [f['text'] for f in report['findings']] + list(report['items_to_verify'])
+                 + [report['recommendation_reason'], d['reason']] + list(d['required_documents']))
+        warnings += check_rule_mentions(texts, {h['rule_id'] for h in case['rule_hits']})
+        warnings += [w for w in check_numbers(texts, case, [c.text for c in chunks], evidence_texts) if w not in warnings]
         for f in report['findings']:
             if not f['evidence']:
                 warnings.append(f'Phát hiện "{f["text"][:60]}" không có mã giao dịch làm bằng chứng.')
@@ -280,12 +319,3 @@ def report_schema(evidence_ids: list[str], article_ids: list[str], allowed_actio
     }, 'required': ['summary', 'findings', 'citations', 'items_to_verify', 'recommended_action',
                     'recommendation_reason', 'draft_review_request'], 'additionalProperties': False}
 
-
-def _iter_dicts(x):
-    if isinstance(x, dict):
-        yield x
-        for v in x.values():
-            yield from _iter_dicts(v)
-    elif isinstance(x, list):
-        for v in x:
-            yield from _iter_dicts(v)

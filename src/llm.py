@@ -102,6 +102,28 @@ def _norm(s: str) -> str:
     return re.sub(r'\s+', ' ', s).strip(' .;"“”').lower()
 
 
+MIN_QUOTE_WORDS = 4
+QUOTE_START = '.:;,!?)-'   # câu trích phải bắt đầu ở đầu điều khoản, đầu câu hoặc sau dấu ngắt
+
+
+def quote_ok(quote: str, article_text: str) -> bool:
+    """Câu trích hợp lệ: nguyên văn, ≥ 4 từ, và bắt đầu ở ranh giới câu/vế trong điều khoản. Chặn kiểu cắt ghép đảo
+    nghĩa như lấy "được phép chi ..." từ "không được phép chi ..."."""
+    q, t = _norm(quote), _norm(article_text)
+    if len(q.split()) < MIN_QUOTE_WORDS:
+        return False
+    i = t.find(q)
+    while i != -1:
+        before = t[:i].rstrip()
+        if not before or before[-1] in QUOTE_START:
+            return True
+        i = t.find(q, i + 1)
+    return False
+
+
+RULE_ID = re.compile(r'\bR0\d\b')
+
+
 def validate_explanation(result: dict, chunks, case: dict) -> list[str]:
     """Kiểm tra sau khi LLM trả lời; sửa tại chỗ (bỏ trích dẫn sai) và trả về danh sách cảnh báo."""
     warnings, by_id = [], {c.id: c for c in chunks}
@@ -110,8 +132,9 @@ def validate_explanation(result: dict, chunks, case: dict) -> list[str]:
         c = by_id.get(cit['article_id'])
         if c is None:
             warnings.append(f"Trích dẫn điều {cit['article_id']} không nằm trong các điều đã truy xuất – đã loại.")
-        elif not _norm(cit['quote']) or _norm(cit['quote']) not in _norm(c.text):
-            warnings.append(f"Câu trích {cit['article_id']} không khớp nguyên văn quy chế – đã loại: \"{cit['quote'][:200]}\"")
+        elif not quote_ok(cit['quote'], c.text):
+            warnings.append(f"Câu trích {cit['article_id']} không khớp nguyên văn một câu/vế của quy chế (hoặc quá ngắn) "
+                            f"– đã loại: \"{cit['quote'][:200]}\"")
         else:
             kept.append(cit)
     result['citations'] = kept
@@ -119,8 +142,12 @@ def validate_explanation(result: dict, chunks, case: dict) -> list[str]:
     for r in result.get('reasons', []):
         if r['source'] == 'rule' and r['ref'] and r['ref'] not in valid_rules:
             warnings.append(f"Lý do nhắc tới {r['ref']} nhưng hồ sơ không có vi phạm này.")
-    texts = [result.get('summary', '')] + [r['text'] for r in result.get('reasons', [])]
-    warnings += check_number_pairs(texts, case, [c.text for c in chunks])
+        elif r['source'] == 'rule' and not r['ref']:
+            warnings.append(f"Lý do loại rule nhưng không nêu mã rule: \"{r['text'][:80]}\"")
+    texts = ([result.get('summary', '')] + [r['text'] for r in result.get('reasons', [])]
+             + list(result.get('items_to_verify', [])) + list(result.get('next_steps', [])))
+    warnings += check_rule_mentions(texts, valid_rules)
+    warnings += check_numbers(texts, case, [c.text for c in chunks])
     if not result.get('citations'):
         warnings.append('Không có trích dẫn quy chế hợp lệ.')
     return warnings
@@ -152,8 +179,71 @@ def number_sources(case: dict) -> list[str]:
     return srcs
 
 
-AMOUNT = re.compile(r'\$\s?([\d,]+\.\d{2})')
-PCT = re.compile(r'(\d{1,4})\s?%')
+AMOUNT = re.compile(r'\$\s?(\d[\d,]*(?:\.\d+)?)|(\d[\d.,]*\d|\d)\s?(?:USD|đô la)\b', re.I)
+PCT = re.compile(r'(\d{1,4}(?:[.,]\d+)?)\s?%')
+
+
+def _money(us: str | None, other: str | None) -> float:
+    """'$18,220.59' (kiểu Mỹ) hoặc '18.220,59 USD' / '5.000 USD' (kiểu Việt) -> số."""
+    if us:
+        return round(float(us.replace(',', '')), 2)
+    t = other
+    if ',' in t and '.' in t:
+        t = t.replace('.', '').replace(',', '.') if t.rfind(',') > t.rfind('.') else t.replace(',', '')
+    elif re.fullmatch(r'\d{1,3}([.,]\d{3})+', t):
+        t = t.replace('.', '').replace(',', '')
+    else:
+        t = t.replace(',', '.')
+    return round(float(t), 2)
+
+
+def amounts_in(text: str) -> set[float]:
+    return {_money(us, other) for us, other in AMOUNT.findall(text or '')}
+
+
+def pcts_in(text: str) -> set[float]:
+    return {float(p.replace(',', '.')) for p in PCT.findall(text or '')}
+
+
+def _all_strings_and_numbers(x, strs: list, nums: set):
+    if isinstance(x, dict):
+        for v in x.values():
+            _all_strings_and_numbers(v, strs, nums)
+    elif isinstance(x, (list, tuple)):
+        for v in x:
+            _all_strings_and_numbers(v, strs, nums)
+    elif isinstance(x, str):
+        strs.append(x)
+    elif isinstance(x, (int, float)) and not isinstance(x, bool):
+        nums.add(round(float(x), 2))
+
+
+def check_rule_mentions(texts: list[str], valid_rules: set) -> list[str]:
+    bad = sorted({r for t in texts for r in RULE_ID.findall(t or '')} - set(valid_rules))
+    return [f'Văn bản nhắc tới {", ".join(bad)} nhưng hồ sơ không có vi phạm này.'] if bad else []
+
+
+def check_numbers(texts: list[str], case: dict, policy_texts=(), extra_texts=()) -> list[str]:
+    """Mọi số tiền và tỷ lệ % trong văn bản LLM viết phải có trong hồ sơ (kể cả số trong dữ liệu JSON), quy chế, hoặc
+    kết quả tra cứu (extra_texts, cho agent); so theo GIÁ TRỊ, không so chuỗi con ("$8,220.59" không khớp "$18,220.59").
+    Số tiền làm tròn tới đô la được chấp nhận. Kèm kiểm tra ghép cặp số tiền – tỷ lệ (check_number_pairs)."""
+    strs, nums = [], set()
+    _all_strings_and_numbers(llm_view(case), strs, nums)
+    _all_strings_and_numbers(case, strs, nums)
+    strs += list(policy_texts) + list(extra_texts)
+    known_amounts = nums | {a for s in strs for a in amounts_in(s)}
+    known_pcts = {p for s in strs for p in pcts_in(s)} | {round(n * 100, 2) for n in nums if 0 < n < 100}
+    rounded = {round(a) for a in known_amounts}
+    out = []
+    for t in texts:
+        for a in sorted(amounts_in(t)):
+            if a not in known_amounts and not (a == round(a) and a in rounded):
+                out.append(f'Số tiền ${a:,.2f} không có trong hồ sơ, quy chế hay kết quả tra cứu.')
+        for p in sorted(pcts_in(t)):
+            if p not in known_pcts and round(p) not in {round(k) for k in known_pcts}:
+                out.append(f'Tỷ lệ {p:g}% không có trong hồ sơ, quy chế hay kết quả tra cứu.')
+    out = list(dict.fromkeys(out))
+    return out + [w for w in check_number_pairs(texts, case, policy_texts) if w not in out]
 CLAUSE = re.compile(r';|\.\s|\n|\.$')     # dấu chấm trong số tiền ($18,220.59) không tách vế
 
 
@@ -161,17 +251,17 @@ def check_number_pairs(texts: list[str], case: dict, policy_texts: list[str] = (
     """Trong mỗi vế câu có tỷ lệ %, mọi số tiền và tỷ lệ phải cùng xuất hiện trong MỘT nguồn của hồ sơ.
     Bắt lỗi ghép số, vd tổng chi cả tháng ghép với tỷ lệ lũy kế tại thời điểm giao dịch.
     Tỷ lệ có trong văn bản quy chế (ngưỡng 90%, 100%) là ngưỡng chung, không phải số liệu của hồ sơ nên được bỏ qua."""
-    srcs = number_sources(case)
-    policy_pcts = {p for t in policy_texts for p in PCT.findall(t)}
+    srcs = [(amounts_in(s), pcts_in(s)) for s in number_sources(case)]
+    policy_pcts = {p for t in policy_texts for p in pcts_in(t)}
     out = []
     for t in texts:
-        for clause in CLAUSE.split(t):
-            pcts, amounts = [p for p in PCT.findall(clause) if p not in policy_pcts], AMOUNT.findall(clause)
+        for clause in CLAUSE.split(t or ''):
+            pcts, amounts = pcts_in(clause) - policy_pcts, amounts_in(clause)
             if not pcts or not amounts:
                 continue
-            if not any(all(a in src for a in amounts) and all(f'{p}%' in src for p in pcts) for src in srcs):
-                out.append(f'Số liệu có thể bị ghép sai: {", ".join("$" + a for a in amounts)} đi với '
-                           f'{", ".join(p + "%" for p in pcts)} không cùng xuất hiện trong một nguồn của hồ sơ.')
+            if not any(amounts <= sa and pcts <= sp for sa, sp in srcs):     # so theo giá trị, cùng MỘT nguồn
+                out.append(f'Số liệu có thể bị ghép sai: {", ".join(f"${a:,.2f}" for a in sorted(amounts))} đi với '
+                           f'{", ".join(f"{p:g}%" for p in sorted(pcts))} không cùng xuất hiện trong một nguồn của hồ sơ.')
     return out
 
 

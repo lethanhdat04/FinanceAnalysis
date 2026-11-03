@@ -61,6 +61,8 @@ def fake_client(*messages):
     def create(**kw):
         sent.append(kw)
         m = queue.pop(0)
+        if isinstance(m, Exception):
+            raise m
         msg = m if isinstance(m, NS) else NS(content=m, tool_calls=None)
         return NS(choices=[NS(message=msg)], usage=NS(prompt_tokens=100, completion_tokens=20))
     return NS(chat=NS(completions=NS(create=create)), sent=sent)
@@ -94,3 +96,27 @@ def test_tool_budget_is_enforced_and_tool_errors_are_returned():
     out = InvestigationAgent(FakeEngine(), RETRIEVER, client=client, model='m', max_tool_calls=2).run('t2', [])
     assert out['n_tool_calls'] == 2 and out['trace'][0]['error']
     assert client.sent[-1]['response_format']['json_schema']['schema']['properties']['recommended_action']['enum'] == ['khong_de_xuat']
+
+
+def test_failed_plan_falls_back_to_investigating_without_a_plan():
+    client = fake_client('khong phai json', '', 'XONG', report(D05_QUOTE, ['t2']))
+    out = InvestigationAgent(FakeEngine(), RETRIEVER, client=client, model='m').run('t2', ['chuyen_phe_duyet'])
+    assert out['plan'] == [] and out['report']['recommended_action'] == 'chuyen_phe_duyet'
+
+
+def test_oversized_report_request_is_shrunk_instead_of_losing_the_investigation():
+    client = fake_client(json.dumps({'plan': []}), 'XONG',
+                         Exception('Error code: 413 - Request too large for model'), report(D05_QUOTE, ['t2']))
+    out = InvestigationAgent(FakeEngine(), RETRIEVER, client=client, model='m').run('t2', ['chuyen_phe_duyet'])
+    assert out['report'] is not None and out['warnings'] == []
+
+
+def test_evidence_is_limited_to_the_part_of_tool_results_the_llm_saw(monkeypatch):
+    monkeypatch.setattr('src.agent.TOOL_RESULT_CHARS', 20)           # kết quả bị cắt trước khi có t9
+    client = fake_client(json.dumps({'plan': []}),
+                         NS(content='', tool_calls=[tool_call('get_related_transactions',
+                                                              {'txn_id': 't2', 'kind': 'cung_cua_hang_30_ngay'}, 'c1')]),
+                         'XONG', report(D05_QUOTE, ['t2']))
+    InvestigationAgent(FakeEngine(), RETRIEVER, client=client, model='m').run('t2', ['chuyen_phe_duyet'])
+    enum = client.sent[-1]['response_format']['json_schema']['schema']['properties']['findings']['items']['properties']['evidence']['items']['enum']
+    assert 't9' not in enum and 't2' in enum
