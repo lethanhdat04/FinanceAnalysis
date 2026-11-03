@@ -53,3 +53,15 @@ severity_casino = "Trung bình"
 [R09]  # Giao dịch cuối tuần / ngày lễ liên bang Mỹ
 include_holidays = true
 severity = "Thấp"
+
+[feedback]  # Học từ phản hồi của kế toán (src/feedback.py). Chỉ áp dụng cho R01, R03, R07 và hai tín hiệu mô hình.
+# Hạ mức một ngữ cảnh khi chắc chắn tỷ lệ cảnh báo đúng < tau, tức chấp nhận bỏ sót 1 vấn đề thật để bớt
+# (1 - tau)/tau lần review thừa. Chọn theo mô phỏng (notebooks/08_feedback.ipynb).
+tau = 0.15
+# Tỷ lệ kế toán đánh giá nhầm. 0.1 là GIẢ ĐỊNH (như trong mô phỏng); khi triển khai cần ước lượng lại bằng cách
+# cho người thứ hai review một mẫu nhỏ. Đặt 0 thì hệ thống thận trọng hơn: với phản hồi có nhầm lẫn, gần như không
+# ngữ cảnh nào "chắc chắn" dưới tau nên rất ít đề xuất.
+noise = 0.1
+confidence = 0.95     # mức chắc chắn để đề xuất
+revoke_below = 0.5    # đề xuất đang áp dụng được gợi ý gỡ khi mức chắc chắn giảm dưới ngưỡng này
+min_n = 20            # số phản hồi tối thiểu của một ngữ cảnh

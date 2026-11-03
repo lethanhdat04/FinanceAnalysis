@@ -59,7 +59,8 @@ class CaseEngine:
         burst = self.df.set_index(['cardholder_id', 'tx_date']).index.map(
             lambda k: bool(self.day_flag.get(self.day_index.get(k, -1), False)))
         self.df['burst_day_flag'] = np.asarray(burst, dtype=bool) & (self.df['amount'] > 0)
-        self.df['anomaly_flag'] = self.tx_flag | self.df['burst_day_flag']
+        self.df['tx_flag'] = self.tx_flag.astype(bool)
+        self.df['anomaly_flag'] = self.df['tx_flag'] | self.df['burst_day_flag']
         self.df['final_level'] = combine_risk(self.df['rule_level'], self.df['anomaly_flag'])
 
         self.clf_full = joblib.load(MODELS / 'expense_clf_full.joblib')
