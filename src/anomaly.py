@@ -21,6 +21,7 @@ ALL_FEATURES = [
     'log_n_cardholder', 'log_n_merchant', 'new_cardholder_merchant', 'new_cardholder_group',
     'log_days_since_last', 'burst_ratio', 'log_n_last_7d', 'log_post_lag', 'weekend', 'round_amount',
 ]
+NO_PREVIOUS_DAYS = 365      # giao dịch đầu tiên của người chi: coi như lần mua trước đã rất lâu
 # Đặc trưng đưa vào Isolation Forest. Bộ tập trung này cho kết quả tốt hơn hẳn dùng tất cả (notebooks/04_anomaly.ipynb):
 # các đặc trưng như độ dài lịch sử, cuối tuần, số chẵn làm mô hình cô lập những giao dịch "hiếm nhưng vô hại".
 FEATURES = [
@@ -83,7 +84,7 @@ def build_features(df: pd.DataFrame) -> pd.DataFrame:
     f['new_cardholder_merchant'] = (d.groupby(['cardholder_id', 'merchant_norm'], sort=False).cumcount() == 0).astype(int)
     f['new_cardholder_group'] = (d.groupby(['cardholder_id', 'expense_group'], sort=False).cumcount() == 0).astype(int)
     gap = d.groupby('cardholder_id', sort=False)['tx_date'].diff().dt.days
-    f['log_days_since_last'] = np.log1p(gap.fillna(gap.median()))
+    f['log_days_since_last'] = np.log1p(gap.fillna(NO_PREVIOUS_DAYS))   # giá trị cố định, không dùng thống kê toàn bộ dữ liệu
     f['post_lag'] = (d['post_date'] - d['tx_date']).dt.days.clip(lower=0)
     f['log_post_lag'] = np.log1p(f['post_lag'])
 

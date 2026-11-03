@@ -88,3 +88,11 @@ def test_day_flags_map_back_to_all_transactions_of_the_day():
     flagged = day['tx_date'].eq(pd.Timestamp('2026-03-01'))
     tx = day_flags_to_transactions(df, day, flagged)
     assert tx.tolist() == [False] * 6 + [True] * 3 + [False]   # hoàn tiền không bị gắn cờ
+
+
+def test_first_purchase_gap_does_not_depend_on_later_data():
+    df = make(history(5))
+    far = make([{'amount': 50, 'tx_date': d} for d in ['2026-04-01', '2026-06-01', '2026-08-01', '2026-10-01', '2026-12-01']])
+    later = pd.concat([df, far.assign(txn_id=[f'z{i}' for i in range(len(far))])], ignore_index=True)
+    a, b = build_features(df), build_features(later)                  # trung vị khoảng cách thay đổi khi thêm dữ liệu sau
+    assert a.loc[0, 'log_days_since_last'] == b.loc[0, 'log_days_since_last']

@@ -29,7 +29,13 @@ RULE_IDS = [f'R0{i}' for i in range(1, 10)]
 def done_ids(path: Path, key='txn_id') -> set:
     if not path.exists():
         return set()
-    return {json.loads(l)[key] for l in path.read_text(encoding='utf-8').splitlines() if l.strip()}
+    out = set()
+    for line in path.read_text(encoding='utf-8').splitlines():
+        try:
+            out.add(json.loads(line)[key])
+        except (json.JSONDecodeError, KeyError):      # dòng cuối ghi dở khi bị dừng giữa chừng: chạy lại hồ sơ đó
+            continue
+    return out
 
 
 def append(path: Path, rec: dict):
@@ -127,7 +133,8 @@ def run_rulecheck(model: str, per_rule: int, n_clean: int, effort: str):
         return ids
 
     sample = stable_sample(OUT / 'samples_rulecheck.json', build)
-    path = OUT / f'rulecheck_{model.split("/")[-1]}.jsonl'
+    # mức suy luận khác mặc định ghi ra file riêng, để chạy tiếp không trộn kết quả của hai thiết lập
+    path = OUT / f'rulecheck_{model.split("/")[-1]}{"" if effort == "medium" else "_" + effort}.jsonl'
     todo = [t for t in sample if t not in done_ids(path)]
     print(f'rulecheck {model}: {len(sample)} giao dịch, còn {len(todo)}')
     schema = {'type': 'object', 'properties': {'violations': {'type': 'array', 'items': {'type': 'string', 'enum': RULE_IDS}}},

@@ -12,7 +12,7 @@ limit = 5000
 severity = "Cao"
 
 [R03]  # Trùng hóa đơn: cùng người chi + cửa hàng + số tiền trong vài ngày
-window_days = 3
+window_days = 3        # hai giao dịch cách nhau TỐI ĐA 3 ngày (vd ngày 2 và ngày 5)
 min_amount = 100
 # Tiền phòng tính theo đêm và vé máy bay mua cho cả đoàn là trùng hợp lệ (xem EDA mục 6)
 exclude_item_desc = ["ROOM CHARGES", "AIR TRAVEL"]
@@ -22,7 +22,7 @@ severity = "Cao"
 
 [R04]  # Chia nhỏ giao dịch để né hạn mức
 limit = 5000
-window_days = 3
+window_days = 3        # các giao dịch nằm trong 3 ngày LIÊN TIẾP tính cả ngày giao dịch (vd ngày 3, 4, 5)
 min_each = 1000
 severity = "Cao"
 

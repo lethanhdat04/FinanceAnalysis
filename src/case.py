@@ -149,7 +149,8 @@ class CaseEngine:
             'rule_hits': [{'rule_id': h.rule_id, 'rule_name': RULE_NAMES[h.rule_id], 'severity': h.severity,
                            'message': h.message, 'related_txn_ids': h.related_txn_ids or ''} for h in hits.itertuples()],
             'anomaly': anom,
-            'budget': self.budget(r['agency_id'], cls['group'], r['month']),
+            # cùng nhóm chi phí mà R05 dùng (nhóm theo MCC), để khối ngân sách không mâu thuẫn với vi phạm R05
+            'budget': self.budget(r['agency_id'], r['expense_group'], r['month']),
             'risk': {'rule_level': r['rule_level'], 'final_level': r['final_level']},
         }
 
