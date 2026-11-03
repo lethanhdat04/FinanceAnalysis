@@ -6,7 +6,7 @@ Từ các đánh giá đó, module này đưa ra ĐỀ XUẤT hiệu chỉnh; đ
 - Rule dựa trên dấu hiệu gián tiếp (R01, R03, R07) và hai tín hiệu của mô hình bất thường (giao dịch bất thường,
   cụm mua dồn trong ngày; tách riêng vì độ tin cậy rất khác nhau): gom phản hồi theo ngữ cảnh
   (nhóm chi phí, khoảng tiền, độ phổ biến của nhà cung cấp, mức mua lặp lại, số tiền lặp lại). Với mô hình bất
-  thường, hạ mức theo ngữ cảnh chính là nâng ngưỡng cờ bất thường cho ngữ cảnh đó.
+  thường, hạ mức theo ngữ cảnh nghĩa là cờ bất thường trong ngữ cảnh đó không còn làm tăng mức rủi ro.
   Tỷ lệ cảnh báo đúng p của mỗi ngữ cảnh có phân phối hậu nghiệm
   Beta(1 + số đúng, 1 + số giả). Nếu chắc chắn (≥ 95%) rằng p < τ thì đề xuất hạ tín hiệu đó xuống mức Thấp
   (vẫn ghi chú trong hồ sơ, không xóa), tương đương nâng ngưỡng của rule trong ngữ cảnh đó. Đề xuất đang áp dụng
@@ -18,7 +18,9 @@ Từ các đánh giá đó, module này đưa ra ĐỀ XUẤT hiệu chỉnh; đ
 - Rule là quy định cứng của quy chế (R02, R04, R05, R06, R08) được BẢO VỆ: phản hồi không làm thay đổi.
   Kế toán có thể chấp nhận một ngoại lệ, nhưng điều kiện vẫn đúng là vi phạm quy chế.
 
-Tín hiệu bị hạ mức vẫn được lấy mẫu kiểm tra một phần nhỏ (explore) để phát hiện đề xuất sai và gỡ bỏ.
+Trong mô phỏng (src/feedback_sim.py), một phần nhỏ hồ sơ đã bị hạ mức vẫn được đưa cho kế toán xem (kiểm tra mẫu)
+để phát hiện đề xuất sai và gỡ bỏ; ứng dụng hiện chưa có bước này, bằng chứng mới chỉ đến từ các hồ sơ vẫn được cảnh
+báo vì tín hiệu khác.
 """
 from dataclasses import dataclass, field
 from itertools import combinations
@@ -86,10 +88,18 @@ def context_features(df: pd.DataFrame) -> pd.DataFrame:
     }, index=df.index)
 
 
+def case_ids(df: pd.DataFrame) -> pd.Series:
+    """Mã hồ sơ của từng giao dịch, cùng quy ước với scripts/load_db.py: cả ngày mua dồn của một người chi là một hồ sơ
+    'B|người chi|ngày', các giao dịch khác là hồ sơ riêng 'T|mã giao dịch'."""
+    burst = df['burst_day_flag'].astype(bool)
+    b = 'B|' + df['cardholder_id'].astype(str) + '|' + pd.to_datetime(df['tx_date']).dt.strftime('%Y-%m-%d')
+    return b.where(burst, 'T|' + df['txn_id'].astype(str))
+
+
 def signal_table(df: pd.DataFrame, hits: pd.DataFrame) -> pd.DataFrame:
     """Một dòng cho mỗi tín hiệu làm tăng mức rủi ro: vi phạm rule mức Cao/Trung bình và cờ của mô hình bất thường.
 
-    df cần các cột của CaseEngine.df (tx_flag, burst_day_flag...). Cột: txn_id, idx (index trong df), month,
+    df cần các cột của CaseEngine.df (tx_flag, burst_day_flag...). Cột: txn_id, idx (index trong df), case_id, month,
     signal, severity và các cột ngữ cảnh.
     """
     idx = pd.Series(df.index, index=df['txn_id'])
@@ -102,6 +112,7 @@ def signal_table(df: pd.DataFrame, hits: pd.DataFrame) -> pd.DataFrame:
     s = pd.concat([rules, model], ignore_index=True).drop_duplicates(['txn_id', 'signal'])
     s['idx'] = s['txn_id'].map(idx).to_numpy()
     s['month'] = df.loc[s['idx'], 'month'].to_numpy()
+    s['case_id'] = case_ids(df).loc[s['idx']].to_numpy()
     ctx = context_features(df)
     for c in CONTEXT:
         s[c] = ctx.loc[s['idx'], c].to_numpy()
@@ -110,12 +121,13 @@ def signal_table(df: pd.DataFrame, hits: pd.DataFrame) -> pd.DataFrame:
 
 # ---------------------------------------------------------------- mức rủi ro sau hiệu chỉnh
 
-def levels(signals: pd.DataFrame, suppressed: pd.Series | None, index) -> pd.Series:
-    """Mức rủi ro cuối của từng giao dịch (theo idx) từ các tín hiệu còn hiệu lực, cùng quy tắc với combine_risk:
-    rule mức Cao -> Cảnh báo cao, Trung bình -> Cần review; mô hình chỉ nâng tới Cần review."""
+def levels(signals: pd.DataFrame, suppressed: pd.Series | None, index, by: str = 'idx') -> pd.Series:
+    """Mức rủi ro cuối của từng giao dịch (by='idx') hoặc từng hồ sơ (by='case_id') từ các tín hiệu còn hiệu lực,
+    cùng quy tắc với combine_risk: rule mức Cao -> Cảnh báo cao, Trung bình -> Cần review; mô hình chỉ nâng tới
+    Cần review. Mức của hồ sơ là mức cao nhất trong các giao dịch của nó (như scripts/load_db.py)."""
     s = signals if suppressed is None else signals[~suppressed.to_numpy()]
     rank = s['severity'].map({'Cao': 2, 'Trung bình': 1, 'Mô hình': 1})
-    worst = rank.groupby(s['idx'].to_numpy()).max()
+    worst = rank.groupby(s[by].to_numpy()).max()
     return pd.Series(worst.reindex(index).fillna(0).astype(int).to_numpy(), index=index).map(dict(enumerate(LEVELS)))
 
 
@@ -129,6 +141,11 @@ class Proposal:
     n_true: int
     p_below: float          # P(tỷ lệ đúng < τ | phản hồi)
     affected: int = 0       # số tín hiệu trong ngữ cảnh này ở kỳ gần nhất (ước lượng khối lượng giảm)
+
+    @classmethod
+    def from_key(cls, key: str) -> 'Proposal':
+        sig, *parts = key.split('|')
+        return cls(sig, dict(p.split('=', 1) for p in parts), 0, 0, 0.0)
 
     @property
     def key(self) -> str:
@@ -161,8 +178,16 @@ class Proposal:
 
 
 def _p_below(tau: float, n_true, n, noise: float = 0.0) -> float:
-    """P(tỷ lệ đúng thật < τ) khi tỷ lệ "đúng" quan sát được (có nhầm lẫn ε) là p(1 − 2ε) + ε."""
-    return float(beta.cdf(tau * (1 - 2 * noise) + noise, 1 + n_true, 1 + n - n_true))
+    """P(tỷ lệ đúng thật < τ | phản hồi).
+
+    Với nhầm lẫn ε, tỷ lệ "đúng" quan sát được là q = p(1 − 2ε) + ε nên chỉ nằm trong [ε, 1 − ε]: tiên nghiệm đều
+    trên p tương ứng với Beta(1, 1) cắt về đoạn đó. Không cắt thì phần xác suất q < ε (không thể xảy ra) bị tính
+    vào "p < τ" và đề xuất tự tin quá mức khi ít phản hồi."""
+    f = lambda x: beta.cdf(x, 1 + n_true, 1 + n - n_true)  # noqa: E731
+    lo, hi = f(noise), f(1 - noise)
+    if hi - lo <= 0:
+        return 0.0
+    return float((f(tau * (1 - 2 * noise) + noise) - lo) / (hi - lo))
 
 
 @dataclass
@@ -197,6 +222,9 @@ class RuleCalibrator:
                         found.append(prop)
                     elif prop.key in active:
                         self.revoked.append(prop)
+        # đề xuất đang áp dụng mà nay không còn đủ phản hồi để đánh giá (vd phản hồi bị xóa): gợi ý gỡ, không im lặng bỏ qua
+        seen = {p.key for p in found} | {p.key for p in self.revoked}
+        self.revoked += [Proposal.from_key(k) for k in sorted(active - seen)]
         # bỏ ngữ cảnh 2 thuộc tính đã nằm trong một ngữ cảnh 1 thuộc tính được đề xuất
         singles = {(p.signal, k, v) for p in found if len(p.context) == 1 for k, v in p.context.items()}
         self.proposals = [p for p in found if len(p.context) == 1

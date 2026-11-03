@@ -66,10 +66,25 @@ def test_active_proposal_is_kept_on_weaker_evidence_and_revoked_on_strong_counte
     assert not {p.key for p in c.proposals} & key and {p.key for p in c.revoked} & key
 
 
+
+def test_active_proposal_without_remaining_evidence_is_suggested_for_removal():
+    cal = RuleCalibrator().fit(feedback('R01', 5, 0), active={'R07|reach=≥ 5'})
+    assert [p.key for p in cal.revoked] == ['R07|reach=≥ 5'] and cal.proposals == []
+    assert Proposal.from_key('R03|group=FEES_EDU_EVENTS|repeat=≥ 5').context == {'group': 'FEES_EDU_EVENTS', 'repeat': '≥ 5'}
+
+
 def test_noise_correction():
     # 10% "đúng" quan sát được, khi kế toán nhầm 10%, tương ứng tỷ lệ đúng thật ≈ 0
     assert _p_below(0.1, 10, 100, noise=0.1) > 0.95
     assert _p_below(0.1, 10, 100, noise=0.0) < 0.95
+
+
+def test_noise_correction_respects_the_possible_range_of_the_observed_rate():
+    # q = p(1 − 2ε) + ε không thể < ε: phần xác suất đó không được tính vào "p < τ" (trước đây cho 0,962 với 1/20)
+    assert _p_below(0.15, 1, 20, noise=0.1) < 0.95
+    assert 0.0 <= _p_below(0.15, 0, 5, noise=0.1) <= 1.0
+    from scipy.stats import beta
+    assert abs(_p_below(0.2, 3, 40) - beta.cdf(0.2, 4, 38)) < 1e-12      # không nhầm lẫn: Beta thường
 
 
 def test_proposal_matches_and_describes_context():
