@@ -40,11 +40,13 @@ Chọn nhóm theo mục đích sử dụng của món hàng. Nếu mô tả quá
 
 
 def chat(client, max_wait_s: float | None = None, retries: int = 8, **kw):
-    """Gọi chat.completions.create; khi bị giới hạn tốc độ (429) thì chờ theo retry-after rồi gọi lại."""
+    """Gọi chat.completions.create; khi bị giới hạn tốc độ (429) thì chờ theo retry-after rồi gọi lại.
+    Lỗi "output_parse_failed" (model sinh lời gọi công cụ hỏng, thỉnh thoảng gặp với gpt-oss) được gọi lại tối đa 2 lần."""
     try:
-        from groq import RateLimitError
+        from groq import BadRequestError, RateLimitError
     except ImportError:                                   # client giả lập trong test
-        RateLimitError = ()
+        BadRequestError = RateLimitError = ()
+    parse_retries = 2
     # GROQ_MAX_WAIT_S: chờ lâu hơn khi chạy thí nghiệm dài (hạn mức token/ngày được hoàn lại dần)
     max_wait_s = max_wait_s if max_wait_s is not None else float(os.getenv('GROQ_MAX_WAIT_S', 120))
     for attempt in range(retries):
@@ -55,6 +57,10 @@ def chat(client, max_wait_s: float | None = None, retries: int = 8, **kw):
             if wait > max_wait_s or attempt == retries - 1:
                 raise RuntimeError(f'Hết hạn mức Groq (cần chờ {wait:.0f} giây): {e}') from e
             time.sleep(wait + 1)
+        except BadRequestError as e:
+            if 'output_parse_failed' not in str(e) or parse_retries == 0:
+                raise
+            parse_retries -= 1
 
 
 def get_client():
