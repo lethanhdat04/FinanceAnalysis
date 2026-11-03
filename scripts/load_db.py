@@ -4,7 +4,12 @@ Hồ sơ cảnh báo: mỗi cụm mua dồn (người chi × ngày bị mô hìn
 Cần review / Cảnh báo cao còn lại mỗi giao dịch một hồ sơ.
 
   .venv/Scripts/python scripts/load_db.py            # từ chối nếu đã có dữ liệu
-  .venv/Scripts/python scripts/load_db.py --reset    # XÓA toàn bộ (kể cả kết luận của kế toán) rồi nạp lại
+  .venv/Scripts/python scripts/load_db.py --reset    # tính lại và nạp lại phân tích, GIỮ lịch sử xử lý
+  .venv/Scripts/python scripts/load_db.py --reset --drop-history   # xóa sạch, kể cả kết luận của kế toán
+
+Khi --reset, lịch sử xử lý được giữ lại cho các hồ sơ vẫn còn sau khi tính lại: kết luận của kế toán (trừ phản hồi
+mô phỏng – sinh lại bằng scripts/simulate_feedback.py), giải thích LLM, hồ sơ điều tra của agent, yêu cầu review,
+audit log, hiệu chỉnh đã duyệt, và trạng thái / người xử lý của hồ sơ.
 """
 import argparse
 import sys
@@ -17,7 +22,8 @@ from sqlalchemy import func, insert, select
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from app.db import Base, engine  # noqa: E402
-from app.models import Case, RuleHit, Transaction  # noqa: E402
+from app.models import AuditLog, Calibration, Case, Decision, Explanation, ReviewRequest, RuleHit, Transaction  # noqa: E402
+from app.services import SIMULATED_ACTION  # noqa: E402
 from src.case import CaseEngine  # noqa: E402
 
 LEVEL_RANK = {'Bình thường': 0, 'Cần review': 1, 'Cảnh báo cao': 2}
@@ -75,9 +81,47 @@ def bulk(conn, table, rows, chunk=20_000):
         conn.execute(insert(table), rows[i:i + chunk])
 
 
+HISTORY = [Decision, Explanation, ReviewRequest, AuditLog, Calibration]
+
+
+def snapshot(conn) -> dict:
+    """Đọc lịch sử xử lý trước khi xóa bảng."""
+    snap = {t.__tablename__: [dict(r._mapping) for r in conn.execute(select(t.__table__).order_by(*t.__table__.primary_key))]
+            for t in HISTORY}
+    snap['decisions'] = [r for r in snap['decisions'] if r['action'] != SIMULATED_ACTION]
+    snap['case_state'] = {r.id: (r.status, r.assignee) for r in conn.execute(
+        select(Case.id, Case.status, Case.assignee).where((Case.status != 'Chờ review') | Case.assignee.is_not(None)))}
+    return snap
+
+
+def restore(conn, snap: dict, case_ids: set) -> dict:
+    """Ghi lại lịch sử cho các hồ sơ còn tồn tại; id tự tăng được cấp mới (giữ đúng thứ tự cũ)."""
+    kept = {}
+    for t in HISTORY:
+        rows = []
+        for r in snap[t.__tablename__]:
+            r = dict(r)
+            if t is not Calibration:
+                r.pop('id')
+            if t in (Decision, Explanation) and r['case_id'] not in case_ids:
+                continue
+            if t is ReviewRequest and r['case_id'] not in case_ids:
+                r['case_id'] = None
+            rows.append(r)
+        if rows:
+            conn.execute(insert(t.__table__), rows)
+        kept[t.__tablename__] = (len(rows), len(snap[t.__tablename__]))
+    states = [(cid, st) for cid, st in snap['case_state'].items() if cid in case_ids]
+    for cid, (status, assignee) in states:
+        conn.execute(Case.__table__.update().where(Case.id == cid).values(status=status, assignee=assignee))
+    kept['trạng thái hồ sơ'] = (len(states), len(snap['case_state']))
+    return kept
+
+
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument('--reset', action='store_true', help='xóa toàn bộ dữ liệu ứng dụng (kể cả kết luận) rồi nạp lại')
+    ap.add_argument('--reset', action='store_true', help='tính lại và nạp lại phân tích (giữ lịch sử xử lý)')
+    ap.add_argument('--drop-history', action='store_true', help='cùng --reset: xóa cả lịch sử xử lý')
     a = ap.parse_args()
 
     Base.metadata.create_all(engine)
@@ -85,9 +129,6 @@ def main():
         n = c.execute(select(func.count()).select_from(Case)).scalar()
     if n and not a.reset:
         sys.exit(f'Cơ sở dữ liệu đã có {n:,} hồ sơ. Thêm --reset nếu thật sự muốn xóa và nạp lại.')
-    if a.reset:
-        Base.metadata.drop_all(engine)
-        Base.metadata.create_all(engine)
 
     t0 = time.time()
     eng = CaseEngine()
@@ -99,10 +140,19 @@ def main():
     tx_cols = ['txn_id', 'month', 'tx_date', 'post_date', 'agency_id', 'agency', 'cardholder_id', 'merchant',
                'merchant_norm', 'item_desc', 'amount', 'mcc_desc', 'expense_group', 'rule_level', 'anomaly_score',
                'anomaly_tx_flag', 'burst_day_flag', 'final_level', 'case_id']
+    # Chạy xong pipeline mới xóa, và xóa + ghi trong CÙNG một giao dịch: pipeline hay ghi lỗi thì dữ liệu cũ còn nguyên.
+    # Nên dừng API trước khi --reset (DROP TABLE phải chờ các kết nối đang mở).
     with engine.begin() as conn:
+        snap = snapshot(conn) if a.reset and not a.drop_history else None
+        if a.reset:
+            Base.metadata.drop_all(conn)
+            Base.metadata.create_all(conn)
         bulk(conn, Case.__table__, records(cases, list(cases.columns)))
         bulk(conn, Transaction.__table__, records(df, tx_cols))
         bulk(conn, RuleHit.__table__, records(hits, ['txn_id', 'rule_id', 'severity', 'message', 'related_txn_ids']))
+        if snap:
+            for name, (k, total) in restore(conn, snap, set(cases['id'])).items():
+                print(f'  giữ lại {name}: {k}/{total}')
     print(f'Ghi vào {engine.url.render_as_string(hide_password=True)}: {time.time() - t0:.0f} giây')
     print(cases.groupby(['kind', 'level']).size().to_string())
 
