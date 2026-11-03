@@ -136,3 +136,68 @@ def test_number_pair_check_flags_mixed_budget_figures():
     assert check_number_pairs([with_threshold], case, ['Khoản chi làm lũy kế vượt 100% dự toán phải được phê duyệt']) == []
     assert check_number_pairs(['Tổng chi cả tháng $19,689.61 trên ngân sách $17,870.00 (110%)'], case) == []
     assert isinstance(llm_view(case)['budget'], str) and 'vượt $1,819.61' in llm_view(case)['budget']
+
+
+def test_numbers_are_checked_by_value_in_every_field():
+    from src.llm import check_numbers
+    case = {'txn_id': 't1', 'transaction': {'amount': 2450.0},
+            'rule_hits': [{'rule_id': 'R05', 'message': 'Giao dịch làm lũy kế chi $18,220.59 vượt ngân sách tháng $17,870.00 (102%).'}],
+            'anomaly': {'reasons': [], 'burst_day': None}, 'budget': None}
+    assert check_numbers(['Lũy kế $18,220.59 (102%); khoản chi $2,450.00, tức khoảng $2,450.'], case) == []
+    assert check_numbers(['Còn lại $8,220.59.'], case)              # trước đây lọt vì là chuỗi con của $18,220.59
+    assert check_numbers(['Kiểm tra hóa đơn $99,999.00'], case)      # số bịa đứng một mình
+    assert check_numbers(['Khoản 5.000 USD cần duyệt'], case)        # số tiền kiểu Việt cũng được kiểm
+    assert check_numbers(['Vượt hạn mức $5,000.00'], case, ['Mỗi giao dịch không quá $5,000.00']) == []   # ngưỡng quy chế
+    assert check_numbers(['vượt 2%'], case)
+
+
+def test_quote_must_start_at_a_clause_boundary_and_not_be_too_short():
+    from src.llm import quote_ok
+    d06 = next(c for c in CHUNKS if c.id == 'D06').text
+    assert quote_ok('Người phê duyệt không được tự phê duyệt khoản chi của chính mình.', d06)
+    assert not quote_ok('được tự phê duyệt khoản chi của chính mình', d06)     # cắt bỏ "không" -> đảo nghĩa
+    assert not quote_ok('phê duyệt', d06)
+
+
+def test_rule_reason_without_ref_and_unknown_rule_mentions_are_flagged():
+    d05 = next(c for c in CHUNKS if c.id == 'D05')
+    result = {'summary': 'Giao dịch vi phạm R02.', 'citations': [],
+              'reasons': [{'text': 'Vượt hạn mức.', 'source': 'rule', 'ref': ''}], 'items_to_verify': [], 'next_steps': []}
+    w = validate_explanation(result, [d05], CASE)
+    assert any('không nêu mã rule' in x for x in w) and any('R02' in x for x in w)
+
+
+def test_invalid_proposal_arguments_are_rejected_and_only_new_proposals_are_returned(tmp_path):
+    store = ReviewStore(tmp_path / 'r.jsonl')
+    good = {'txn_id': 't1', 'reason': 'Nghi chia nhỏ', 'route_to': 'quan_ly', 'required_documents': ['Hóa đơn']}
+    bad = {'txn_id': 't1', 'reason': 'x', 'route_to': 'giam_doc', 'required_documents': [], 'extra': 1}
+    client = fake_client(NS(content='', tool_calls=[tool_call('propose_review_request', good)]), 'Đã đề xuất.',
+                         NS(content='', tool_calls=[tool_call('propose_review_request', bad)]), 'Không tạo được.')
+    asst = Assistant(FakeEngine(), RETRIEVER, store=store, client=client)
+    assert len(asst.ask('Đề xuất review t1')['pending_reviews']) == 1
+    out = asst.ask('Đề xuất thêm một yêu cầu')
+    assert out['pending_reviews'] == []                                     # không lặp lại đề xuất của lượt trước
+    assert 'route_to' in json.loads([m for m in asst.messages if m['role'] == 'tool'][-1]['content'])['error']
+
+
+def test_a_proposal_can_only_be_confirmed_once(tmp_path):
+    store = ReviewStore(tmp_path / 'r.jsonl')
+    p = store.propose(txn_id='t1', reason='Kiểm tra', route_to='ke_toan', required_documents=[])
+    store.confirm(p['proposal_id'], user='kt')
+    with pytest.raises(KeyError):
+        store.confirm(p['proposal_id'], user='kt')                           # bấm đúp
+    assert len(store.all()) == 1
+
+
+def test_old_turns_are_dropped_to_keep_requests_small(tmp_path):
+    from src import assistant as A
+    answers = [f'Trả lời {i} ' + 'x' * 6000 for i in range(4)]
+    client = fake_client(*answers)
+    sent_messages, create = [], client.chat.completions.create
+    client.chat.completions.create = lambda **kw: (sent_messages.append([dict(m) for m in kw['messages']]), create(**kw))[1]
+    asst = Assistant(FakeEngine(), RETRIEVER, store=ReviewStore(tmp_path / 'r.jsonl'), client=client)
+    for i in range(4):
+        asst.ask(f'Câu hỏi {i}')
+    sizes = [sum(len(m.get('content') or '') for m in msgs[1:]) for msgs in sent_messages]
+    assert max(sizes) <= A.HISTORY_CHARS and sent_messages[-1][0]['role'] == 'system'
+    assert sent_messages[-1][-1]['content'] == 'Câu hỏi 3'

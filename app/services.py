@@ -12,14 +12,18 @@ class DBReviewStore(ReviewStore):
     """Như ReviewStore nhưng khi người dùng xác nhận thì ghi vào bảng review_requests."""
 
     def confirm(self, proposal_id: str, user: str, case_id: str | None = None) -> dict:
-        req = self.pending.pop(proposal_id)
-        with SessionLocal() as s:
-            rr = ReviewRequest(case_id=case_id, txn_id=req['txn_id'], reason=req['reason'], route_to=req['route_to'],
-                               required_documents=req['required_documents'], source='tro_ly', created_by=user)
-            s.add(rr)
-            s.add(AuditLog(case_id=case_id, user=user, action='tao_yeu_cau_review', detail=req))
-            s.commit()
-            return {**req, 'id': rr.id, 'status': rr.status, 'confirmed_by': user}
+        req = self.take(proposal_id)              # KeyError nếu đã được xác nhận (bấm đúp) -> API trả 404
+        try:
+            with SessionLocal() as s:
+                rr = ReviewRequest(case_id=case_id, txn_id=req['txn_id'], reason=req['reason'], route_to=req['route_to'],
+                                   required_documents=req['required_documents'], source='tro_ly', created_by=user)
+                s.add(rr)
+                s.add(AuditLog(case_id=case_id, user=user, action='tao_yeu_cau_review', detail=req))
+                s.commit()
+                return {**req, 'id': rr.id, 'status': rr.status, 'confirmed_by': user}
+        except Exception:
+            self.put_back(proposal_id, req)       # ghi lỗi thì đề xuất vẫn còn để xác nhận lại
+            raise
 
 
 class Services:
@@ -57,10 +61,15 @@ class Services:
     def load_in_background(self):
         threading.Thread(target=self.load, daemon=True).start()
 
+    MAX_CHATS = 50
+
     def chat(self, session_id: str) -> Assistant:
         with self._lock:
             if session_id not in self.chats:
+                while len(self.chats) >= self.MAX_CHATS:          # bỏ phiên cũ nhất (dict giữ thứ tự tạo)
+                    self.chats.pop(next(iter(self.chats)))
                 self.chats[session_id] = Assistant(self.engine, self.retriever, store=DBReviewStore())
+                self.chats[session_id].lock = threading.Lock()   # một phiên chỉ xử lý một câu hỏi tại một thời điểm
             return self.chats[session_id]
 
 
@@ -91,13 +100,27 @@ def past_decisions(signal: str) -> dict:
 
 
 class InvestigationJobs:
+    MAX_FINISHED = 100
+
     def __init__(self):
         self.jobs: dict[str, dict] = {}
+        self._lock = threading.Lock()
 
-    def start(self, services_, case_id: str, txn_id: str, allowed: list[str], labels: dict, user: str) -> str:
+    def running(self, case_id: str) -> str | None:
+        return next((j['id'] for j in self.jobs.values() if j['case_id'] == case_id and j['status'] == 'dang_chay'), None)
+
+    def start(self, services_, case_id: str, txn_id: str, allowed: list[str], labels: dict, user: str) -> tuple[str, bool]:
+        """Trả về (job_id, có phải job mới). Mỗi hồ sơ chỉ có một job đang chạy; giữ tối đa MAX_FINISHED job đã xong."""
         from src.agent import InvestigationAgent
-        job_id = _uuid.uuid4().hex[:10]
-        job = self.jobs[job_id] = {'id': job_id, 'case_id': case_id, 'status': 'dang_chay', 'phase': 'lap_ke_hoach',
+        with self._lock:
+            existing = self.running(case_id)
+            if existing:
+                return existing, False
+            done = [k for k, j in self.jobs.items() if j['status'] != 'dang_chay']
+            for k in done[:max(0, len(done) - self.MAX_FINISHED)]:
+                self.jobs.pop(k)
+            job_id = _uuid.uuid4().hex[:10]
+            job = self.jobs[job_id] = {'id': job_id, 'case_id': case_id, 'status': 'dang_chay', 'phase': 'lap_ke_hoach',
                                    'plan': [], 'trace': [], 'result': None, 'error': None,
                                    'started_at': _dt.now().isoformat(timespec='seconds')}
 
@@ -123,7 +146,7 @@ class InvestigationJobs:
                 job.update(status='loi', error=str(e))
 
         threading.Thread(target=work, daemon=True).start()
-        return job_id
+        return job_id, True
 
 
 jobs = InvestigationJobs()

@@ -36,6 +36,7 @@ def client():
             yield s
     app.dependency_overrides[get_session] = override
     app.state.skip_services = True
+    app.state.skip_db_init = True
     with TestClient(app) as c:
         yield c
     app.dependency_overrides.clear()

@@ -21,7 +21,8 @@ ROLES = {'ke_toan': 'Kế toán', 'quan_ly': 'Quản lý'}
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    Base.metadata.create_all(engine)
+    if not getattr(app.state, 'skip_db_init', False):      # test dùng SQLite riêng, không chạm cơ sở dữ liệu thật
+        Base.metadata.create_all(engine)
     if not getattr(app.state, 'skip_services', False):
         services.load_in_background()
     yield
@@ -178,6 +179,7 @@ def explain(case_id: str, body: ExplainIn, s: Session = Depends(get_session), sv
     c = svc.engine.case(representative_txn(txns, hits_by))
     chunks = svc.retriever.retrieve_for_case(svc.engine.retrieval_query(c), rule_ids=[h['rule_id'] for h in c['rule_hits']],
                                              signals=c['anomaly']['signals'], groups=[c['expense_group']['group']])
+    s.commit()          # trả kết nối về pool trong lúc chờ LLM (có thể mất nhiều phút khi bị giới hạn tốc độ)
     try:
         out = explain_case(c, chunks)
     except RuntimeError as e:
@@ -219,10 +221,14 @@ class ChatIn(BaseModel):
 @app.post('/api/chat')
 def chat(body: ChatIn, svc=Depends(need_services)):
     asst = svc.chat(body.session_id)
+    if not asst.lock.acquire(blocking=False):
+        raise HTTPException(409, 'Trợ lý đang trả lời câu hỏi trước trong phiên này, vui lòng chờ')
     try:
         return asst.ask(body.message)
     except RuntimeError as e:
         raise HTTPException(503, str(e))
+    finally:
+        asst.lock.release()
 
 
 class ConfirmIn(BaseModel):
@@ -233,10 +239,14 @@ class ConfirmIn(BaseModel):
 @app.post('/api/review-proposals/{proposal_id}/confirm')
 def confirm_proposal(proposal_id: str, body: ConfirmIn, s: Session = Depends(get_session), svc=Depends(need_services)):
     asst = svc.chats.get(body.session_id)
-    if asst is None or proposal_id not in asst.store.pending:
+    req = asst.store.pending.get(proposal_id) if asst else None
+    if req is None:
         raise HTTPException(404, 'Không tìm thấy đề xuất (có thể đã xác nhận hoặc phiên đã hết)')
-    txn = s.get(Transaction, asst.store.pending[proposal_id]['txn_id'])
-    return asst.store.confirm(proposal_id, user=body.user, case_id=txn.case_id if txn else None)
+    txn = s.get(Transaction, req['txn_id'])
+    try:
+        return asst.store.confirm(proposal_id, user=body.user, case_id=txn.case_id if txn else None)
+    except KeyError:                       # bấm đúp: lần bấm kia đã xác nhận
+        raise HTTPException(404, 'Đề xuất đã được xác nhận')
 
 
 @app.get('/api/review-requests')
@@ -267,9 +277,9 @@ class InvestigateIn(BaseModel):
 @app.post('/api/cases/{case_id:path}/investigate')
 def investigate(case_id: str, body: InvestigateIn, s: Session = Depends(get_session), svc=Depends(need_services)):
     case = get_case(s, case_id)
-    running = [j for j in jobs.jobs.values() if j['case_id'] == case_id and j['status'] == 'dang_chay']
+    running = jobs.running(case_id)
     if running:
-        return {'job_id': running[0]['id']}
+        return {'job_id': running}
     txns = s.execute(select(Transaction).where(Transaction.case_id == case_id)).scalars().all()
     hits_by = {}
     for h in s.execute(select(RuleHit).where(RuleHit.txn_id.in_([t.txn_id for t in txns]))).scalars():
@@ -278,9 +288,10 @@ def investigate(case_id: str, body: InvestigateIn, s: Session = Depends(get_sess
     allowed = [k for k, a in ACTIONS.items() if a.from_status == 'Đang review' and a.role == 'ke_toan'
                and not (k == 'chap_nhan' and case.level == 'Cảnh báo cao')]
     labels = {k: a.label for k, a in ACTIONS.items()}
-    job_id = jobs.start(svc, case_id, representative_txn(txns, hits_by), allowed, labels, body.user)
-    s.add(AuditLog(case_id=case_id, user=body.user, action='bat_dau_dieu_tra', detail={'job_id': job_id}))
-    s.commit()
+    job_id, new = jobs.start(svc, case_id, representative_txn(txns, hits_by), allowed, labels, body.user)
+    if new:
+        s.add(AuditLog(case_id=case_id, user=body.user, action='bat_dau_dieu_tra', detail={'job_id': job_id}))
+        s.commit()
     return {'job_id': job_id}
 
 

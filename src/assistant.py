@@ -5,6 +5,7 @@
   người dùng xác nhận qua ReviewStore.confirm() – hàm này không được đưa cho LLM.
 """
 import json
+import threading
 import uuid
 from datetime import datetime
 from pathlib import Path
@@ -14,6 +15,11 @@ from src.llm import MODEL_EXPLAIN, chat, get_client
 ROOT = Path(__file__).resolve().parents[1]
 REVIEW_FILE = ROOT / 'data' / 'processed' / 'review_requests.jsonl'
 MAX_STEPS = 6
+# Bản miễn phí của Groq giới hạn 8.000 token cho một request: giới hạn kết quả công cụ và lịch sử hội thoại gửi kèm
+TOOL_RESULT_CHARS = 4000
+HISTORY_CHARS = 14000
+MAX_HISTORY_LIMIT = 20
+ROUTES = ('ke_toan', 'quan_ly')
 
 SYSTEM = """Bạn là trợ lý tra cứu cho kế toán kiểm soát chi tiêu thẻ mua sắm. Trả lời bằng tiếng Việt, ngắn gọn.
 - Mọi số liệu (số tiền, ngân sách, lịch sử, vi phạm, mức rủi ro) phải lấy từ tool. Không tự suy đoán số liệu.
@@ -48,24 +54,56 @@ TOOLS = [
 ]
 
 
+def validate_proposal(args: dict) -> dict:
+    """Tham số của propose_review_request do LLM sinh ra: kiểm tra đủ trường, đúng kiểu, nơi nhận hợp lệ; bỏ khóa lạ."""
+    req = {k: args.get(k) for k in ('txn_id', 'reason', 'route_to', 'required_documents')}
+    if not isinstance(req['txn_id'], str) or not req['txn_id'].strip():
+        raise ValueError('Thiếu mã giao dịch (txn_id)')
+    if not isinstance(req['reason'], str) or not req['reason'].strip():
+        raise ValueError('Thiếu lý do (reason)')
+    if req['route_to'] not in ROUTES:
+        raise ValueError(f'route_to phải là một trong {ROUTES}')
+    docs = req['required_documents'] or []
+    if not isinstance(docs, list) or not all(isinstance(d, str) for d in docs):
+        raise ValueError('required_documents phải là danh sách chuỗi')
+    req['required_documents'] = docs
+    return req
+
+
 class ReviewStore:
     def __init__(self, path: Path = REVIEW_FILE):
         self.path = path
         self.pending: dict[str, dict] = {}
+        self._lock = threading.Lock()
 
     def propose(self, **req) -> dict:
+        req = validate_proposal(req)
         pid = uuid.uuid4().hex[:8]
         self.pending[pid] = {**req, 'proposal_id': pid, 'status': 'Chờ xác nhận'}
         return self.pending[pid]
 
+    def take(self, proposal_id: str) -> dict:
+        """Lấy đề xuất ra khỏi danh sách chờ (một lần duy nhất kể cả khi bấm đúp). KeyError nếu không còn."""
+        with self._lock:
+            return self.pending.pop(proposal_id)
+
+    def put_back(self, proposal_id: str, req: dict):
+        with self._lock:
+            self.pending.setdefault(proposal_id, req)
+
     def confirm(self, proposal_id: str, user: str) -> dict:
         """Chỉ gọi từ giao diện khi người dùng bấm xác nhận."""
-        req = self.pending.pop(proposal_id)
-        req.update(status='Chờ review', confirmed_by=user, created_at=datetime.now().isoformat(timespec='seconds'))
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        with open(self.path, 'a', encoding='utf-8') as f:
-            f.write(json.dumps(req, ensure_ascii=False) + '\n')
-        return req
+        req = self.take(proposal_id)
+        try:
+            done = {**req, 'status': 'Chờ review', 'confirmed_by': user,
+                    'created_at': datetime.now().isoformat(timespec='seconds')}
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            with open(self.path, 'a', encoding='utf-8') as f:
+                f.write(json.dumps(done, ensure_ascii=False) + '\n')
+            return done
+        except Exception:
+            self.put_back(proposal_id, req)          # ghi lỗi thì đề xuất vẫn còn để xác nhận lại
+            raise
 
     def all(self) -> list[dict]:
         if not self.path.exists():
@@ -85,7 +123,7 @@ class Assistant:
         if name == 'lookup_transaction':
             return self.engine.case(args['txn_id'])
         if name == 'get_cardholder_history':
-            return self.engine.cardholder_history(args['txn_id'], int(args.get('limit') or 10))
+            return self.engine.cardholder_history(args['txn_id'], max(1, min(int(args.get('limit') or 10), MAX_HISTORY_LIMIT)))
         if name == 'check_budget':
             return self.engine.budget(args['agency_id'], args['expense_group'], args['month']) or {'khong_ap_dung': 'Đơn vị không có ngân sách tháng riêng cho nhóm chi phí này (nhóm chi không thường xuyên), nên không xét quy tắc vượt ngân sách. Đây không phải dấu hiệu rủi ro.'}
         if name == 'search_policy':
@@ -95,27 +133,56 @@ class Assistant:
             return self.store.propose(**args)
         raise ValueError(f'Tool không tồn tại: {name}')
 
+    def _trim_history(self, budget: int = HISTORY_CHARS):
+        """Bỏ các lượt hỏi đáp cũ nhất cho tới khi lịch sử gửi kèm nằm trong giới hạn; luôn giữ lời dặn hệ thống và
+        lượt hỏi hiện tại."""
+        size = lambda m: len(m.get('content') or '') + len(json.dumps(m.get('tool_calls', ''), default=str))  # noqa: E731
+        while sum(size(m) for m in self.messages[1:]) > budget:
+            users = [i for i, m in enumerate(self.messages) if m['role'] == 'user']
+            if len(users) < 2:
+                break
+            del self.messages[users[0]:users[1]]
+
+    def _chat(self):
+        self._trim_history()
+        try:
+            return chat(self.client, model=self.model, messages=self.messages, tools=TOOLS, tool_choice='auto', temperature=0.2)
+        except RuntimeError:
+            raise
+        except Exception as e:
+            if '413' not in str(e) and 'too large' not in str(e).lower():
+                raise
+            self._trim_history(budget=HISTORY_CHARS // 3)       # request quá lớn: chỉ giữ lượt hiện tại rồi thử lại
+            try:
+                return chat(self.client, model=self.model, messages=self.messages, tools=TOOLS, tool_choice='auto',
+                            temperature=0.2)
+            except RuntimeError:
+                raise
+            except Exception as e2:
+                raise RuntimeError('Câu hỏi và dữ liệu tra cứu quá dài cho một lượt trả lời; hãy hỏi gọn hơn '
+                                   'hoặc mở phiên trợ lý mới.') from e2
+
     def ask(self, question: str) -> dict:
         self.client = self.client or get_client()
         self.messages.append({'role': 'user', 'content': question})
-        trace = []
+        trace, before = [], set(self.store.pending)
+        new = lambda: [p for k, p in self.store.pending.items() if k not in before]  # noqa: E731  chỉ đề xuất của lượt này
         for _ in range(MAX_STEPS):
-            resp = chat(self.client, model=self.model, messages=self.messages, tools=TOOLS,
-                        tool_choice='auto', temperature=0.2)
+            resp = self._chat()
             msg = resp.choices[0].message
             calls = msg.tool_calls or []
             self.messages.append({'role': 'assistant', 'content': msg.content or '',
                                   **({'tool_calls': [c.model_dump() if hasattr(c, 'model_dump') else c for c in calls]} if calls else {})})
             if not calls:
-                return {'answer': msg.content, 'tool_calls': trace, 'pending_reviews': list(self.store.pending.values())}
+                return {'answer': msg.content, 'tool_calls': trace, 'pending_reviews': new()}
             for call in calls:
+                args = {}
                 try:
                     args = json.loads(call.function.arguments or '{}')
                     result = self.run_tool(call.function.name, args)
                 except Exception as e:                            # lỗi tool trả lại cho LLM, không làm hỏng vòng lặp
-                    args, result = locals().get('args', {}), {'error': str(e)}
+                    result = {'error': str(e)}
                 trace.append({'tool': call.function.name, 'args': args})
                 self.messages.append({'role': 'tool', 'tool_call_id': call.id, 'name': call.function.name,
-                                      'content': json.dumps(result, ensure_ascii=False, default=str)[:12000]})
-        return {'answer': 'Không hoàn thành được trong số bước cho phép.', 'tool_calls': trace,
-                'pending_reviews': list(self.store.pending.values())}
+                                      'content': json.dumps(result, ensure_ascii=False, default=str)[:TOOL_RESULT_CHARS]})
+        return {'answer': 'Không hoàn thành được trong số bước cho phép.', 'tool_calls': trace, 'pending_reviews': new()}
