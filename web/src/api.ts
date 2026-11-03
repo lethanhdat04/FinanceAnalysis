@@ -206,6 +206,7 @@ export interface CalibrationProposal {
   affected: number
   title: string
   text: string
+  previous?: { status: 'tu_choi' | 'da_go' | 'dang_ap_dung'; decided_by: string; note: string; n: number | null; decided_at: string | null } | null
 }
 
 export interface CalibrationRecord {

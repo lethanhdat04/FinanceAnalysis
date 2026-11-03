@@ -73,6 +73,14 @@ def test_high_alert_cannot_be_accepted_by_accountant(client):
     assert d['decisions'][-1]['conclusion'] == 'vi_pham'
 
 
+
+def test_action_conclusion_cannot_be_overridden(client):
+    base = {'user': 'kt1', 'role': 'ke_toan'}
+    client.post('/api/cases/T|t2/actions', json={**base, 'action': 'nhan_xu_ly'})
+    r = client.post('/api/cases/T|t2/actions', json={**base, 'action': 'chap_nhan', 'conclusion': 'vi_pham'})
+    assert r.status_code == 409
+
+
 def test_review_case_can_be_accepted_with_signal_feedback(client):
     base = {'user': 'kt1', 'role': 'ke_toan'}
     client.post('/api/cases/T|t2/actions', json={**base, 'action': 'nhan_xu_ly'})

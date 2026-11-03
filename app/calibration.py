@@ -1,19 +1,26 @@
 """Hiệu chỉnh theo phản hồi trong ứng dụng: gom phản hồi từ bảng decisions, đề xuất, quản lý duyệt, tính lại mức hồ sơ.
 
-Hệ thống chỉ đề xuất; một hiệu chỉnh chỉ có hiệu lực khi quản lý duyệt. Khi duyệt hoặc gỡ, chỉ các hồ sơ còn
-"Chờ review" được tính lại mức (hồ sơ đang xử lý giữ nguyên để không đổi giữa chừng việc của kế toán).
+Hệ thống chỉ đề xuất; một hiệu chỉnh chỉ có hiệu lực khi quản lý duyệt. Khi duyệt hoặc gỡ:
+- hồ sơ "Chờ review" được đặt lại mức theo các hiệu chỉnh đang áp dụng;
+- hồ sơ đang xử lý chỉ được NÂNG mức (không hạ giữa chừng việc của kế toán). Nhờ vậy gỡ một hiệu chỉnh trả hồ sơ đang
+  xử lý về "Cảnh báo cao" nếu đó là mức gốc, và Điều 6 (cảnh báo cao phải do quản lý duyệt) không bị lách;
+- hồ sơ đã kết thúc giữ nguyên.
+Mức đích lấy từ mức gốc đã lưu khi nạp dữ liệu (transactions.final_level); chỉ hồ sơ có tín hiệu bị hiệu chỉnh tác động
+mới được tính lại từ tín hiệu, nên đổi cấu hình rule / mô hình sau khi nạp không làm đổi mức hàng loạt.
 """
 import pandas as pd
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models import AuditLog, Calibration, Case, Decision, Transaction
+from app.workflow import FINAL
 from app.services import SIMULATED_ACTION
 from src.feedback import BURST, CALIBRATABLE, MODEL, MODEL_SIGNALS, PROTECTED, SIGNAL_NAMES, VERDICTS, Proposal, \
     RuleCalibrator, levels, signal_table
 from src.rules import load_config
 
 OPEN_STATUS = 'Chờ review'
+RANK = {'Bình thường': 0, 'Cần review': 1, 'Cảnh báo cao': 2}
 
 
 class CalibrationError(Exception):
@@ -37,12 +44,13 @@ class CalibrationService:
 
     # ------------------------------------------------------------ phản hồi
     def feedback(self, s: Session) -> pd.DataFrame:
-        """Một dòng cho mỗi (hồ sơ, tín hiệu) đã được đánh giá; lấy đánh giá mới nhất. Cột simulated đánh dấu phản hồi
-        mô phỏng. "mo_hinh" trong giao diện ứng với cụm mua dồn nếu hồ sơ là cụm, ngược lại là giao dịch bất thường."""
-        rows = s.execute(select(Decision.case_id, Decision.signal_feedback, Decision.action)
-                         .order_by(Decision.id)).all()
+        """Một dòng cho mỗi (hồ sơ, tín hiệu) đã được đánh giá; lấy đánh giá mới nhất, và đánh giá thật của kế toán luôn
+        được ưu tiên hơn phản hồi mô phỏng. Cột simulated đánh dấu phản hồi mô phỏng. "mo_hinh" trong giao diện ứng với
+        cụm mua dồn nếu hồ sơ là cụm, ngược lại là giao dịch bất thường."""
+        rows = s.execute(select(Decision.id, Decision.case_id, Decision.signal_feedback, Decision.action)).all()
+        rows.sort(key=lambda r: (r.action != SIMULATED_ACTION, r.id))       # mô phỏng trước, thật sau (ghi đè)
         latest = {}
-        for case_id, fb, action in rows:
+        for _, case_id, fb, action in rows:
             for sig, verdict in (fb or {}).items():
                 if verdict in VERDICTS:
                     signal = (BURST if case_id.startswith('B|') else MODEL) if sig == MODEL else sig
@@ -77,6 +85,18 @@ class CalibrationService:
             summary.append({'signal': sig, 'name': SIGNAL_NAMES[sig], 'protected': sig in PROTECTED,
                             'n': int(len(d)), 'n_true': int(d['label'].sum()), 'n_simulated': int(d['simulated'].sum())})
 
+        def reopened(p) -> bool:
+            """Đề xuất đã bị từ chối / gỡ được đưa lại khi có thêm phản hồi so với lúc quyết định."""
+            c = decided.get(p.key)
+            return c is None or (c.status != 'dang_ap_dung' and p.n > (c.stats or {}).get('n', 0))
+
+        def proposal(p) -> dict:
+            c = decided.get(p.key)
+            prev = None if c is None else {'status': c.status, 'decided_by': c.decided_by, 'note': c.note,
+                                           'n': (c.stats or {}).get('n'),
+                                           'decided_at': c.decided_at.isoformat() if c.decided_at else None}
+            return {**p.as_dict(), 'previous': prev}
+
         def record(c: Calibration) -> dict:
             now = current.get(c.key)
             title = Proposal(c.signal, c.context, 0, 0, 0.0).title()
@@ -90,7 +110,7 @@ class CalibrationService:
             'settings': cfg,
             'n_feedback': int(len(fb)), 'n_simulated': int(fb['simulated'].sum()) if len(fb) else 0,
             'summary': summary,
-            'proposals': [p.as_dict() for p in cal.proposals if p.key not in decided],
+            'proposals': [proposal(p) for p in cal.proposals if reopened(p)],
             'active': [record(c) for c in decided.values() if c.status == 'dang_ap_dung'],
             'history': [record(c) for c in decided.values() if c.status != 'dang_ap_dung'],
         }
@@ -114,7 +134,10 @@ class CalibrationService:
         elif decision == 'go_bo':
             if c is None or c.status != 'dang_ap_dung':
                 raise CalibrationError('Hiệu chỉnh này không đang được áp dụng')
+            now = next((x['now'] for x in st['active'] if x['key'] == key), None)
             c.status, c.decided_by, c.note = 'da_go', user, note
+            if now:                       # số phản hồi lúc gỡ: chỉ đề xuất lại khi có thêm phản hồi
+                c.stats = {k: now[k] for k in ('n', 'n_true', 'precision', 'p_below', 'affected')}
         else:
             raise CalibrationError(f'Quyết định không hợp lệ: {decision}')
         s.flush()
@@ -131,23 +154,32 @@ class CalibrationService:
         return sig.assign(case_id=sig['txn_id'].map(txn_case))
 
     def relevel(self, s: Session, user: str) -> list[dict]:
-        """Tính lại mức của các hồ sơ "Chờ review" theo các hiệu chỉnh đang áp dụng (từ mức gốc của hệ thống)."""
-        sig = self._open_signals(s)
-        props = [Proposal(c.signal, c.context, 0, 0, 1.0) for c in self.active(s)]
+        """Đặt lại mức hồ sơ theo các hiệu chỉnh đang áp dụng (xem docstring module)."""
+        rows = s.execute(select(Transaction.txn_id, Transaction.case_id, Transaction.final_level)
+                         .join(Case, Case.id == Transaction.case_id).where(Case.status.not_in(FINAL))).all()
+        txns = pd.DataFrame(rows, columns=['txn_id', 'case_id', 'final_level'])
+        original = txns.assign(r=txns['final_level'].map(RANK).fillna(0)).groupby('case_id')['r'].max()
+        sig = self.signals[self.signals['txn_id'].isin(set(txns['txn_id']))]
+        sig = sig.assign(case_id=sig['txn_id'].map(dict(zip(txns['txn_id'], txns['case_id']))))
         sup = pd.Series(False, index=sig.index)
-        for p in props:
-            sup |= p.matches(sig)
-        lv = levels(sig, sup, pd.Index(sig['idx'].unique()))
-        rank = {'Bình thường': 0, 'Cần review': 1, 'Cảnh báo cao': 2}
-        per_case = (pd.DataFrame({'case_id': sig.drop_duplicates('idx').set_index('idx').loc[lv.index, 'case_id'].values,
-                                  'r': lv.map(rank).values})
-                    .groupby('case_id')['r'].max().map({v: k for k, v in rank.items()}))
+        for c in self.active(s):
+            sup |= Proposal(c.signal, c.context, 0, 0, 1.0).matches(sig)
+        touched = pd.Index(sig.loc[sup, 'case_id'].unique())
+        computed = levels(sig, sup, touched, by='case_id').map(RANK)
+        target = original.copy()
+        target[touched] = computed.to_numpy()
+
         changed = []
-        for case in s.execute(select(Case).where(Case.status == OPEN_STATUS)).scalars():
-            new = per_case.get(case.id, 'Bình thường')
-            if new != case.level:
-                changed.append({'case_id': case.id, 'from': case.level, 'to': new})
-                case.level = new
+        stmt = select(Case).where(Case.status.not_in(FINAL)).with_for_update()   # khóa: không đổi trạng thái giữa chừng
+        for case in s.execute(stmt).scalars():
+            if case.id not in target.index:
+                continue
+            new, cur = int(target[case.id]), RANK.get(case.level, 0)
+            if new == cur or (case.status != OPEN_STATUS and new < cur):
+                continue
+            to = {v: k for k, v in RANK.items()}[new]
+            changed.append({'case_id': case.id, 'from': case.level, 'to': to, 'status': case.status})
+            case.level = to
         for ch in changed:
             s.add(AuditLog(case_id=ch['case_id'], user=user, action='hieu_chinh_doi_muc', detail=ch))
         return changed

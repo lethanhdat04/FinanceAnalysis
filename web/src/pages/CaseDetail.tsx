@@ -298,8 +298,11 @@ function ActionPanel({ d, meta }: { d: Detail; meta: Meta }) {
   const [note, setNote] = useState('')
   const [feedback, setFeedback] = useState<Record<string, string>>({})
   const signals = [...d.case.rules, ...(d.case.has_anomaly ? ['mo_hinh'] : [])]
+  const asksFeedback = action === 'chap_nhan' || action === 'chuyen_phe_duyet' || action === 'phe_duyet' || action === 'tu_choi'
   const mut = useMutation({
-    mutationFn: () => api.action(d.case.id, { action: action!, user: user.id, role: user.role, note, signal_feedback: feedback }),
+    // chỉ gửi đánh giá tín hiệu khi thao tác có hỏi; đánh giá còn sót từ thao tác khác không được lưu
+    mutationFn: () =>
+      api.action(d.case.id, { action: action!, user: user.id, role: user.role, note, signal_feedback: asksFeedback ? feedback : {} }),
     onSuccess: () => {
       setAction(null)
       setNote('')
@@ -307,9 +310,9 @@ function ActionPanel({ d, meta }: { d: Detail; meta: Meta }) {
       qc.invalidateQueries({ queryKey: ['case', d.case.id] })
       qc.invalidateQueries({ queryKey: ['cases'] })
       qc.invalidateQueries({ queryKey: ['stats'] })
+      qc.invalidateQueries({ queryKey: ['calibration'] })
     },
   })
-  const asksFeedback = action === 'chap_nhan' || action === 'chuyen_phe_duyet' || action === 'phe_duyet' || action === 'tu_choi'
 
   return (
     <section className="panel">
@@ -331,7 +334,10 @@ function ActionPanel({ d, meta }: { d: Detail; meta: Meta }) {
             type="button"
             className={action === a ? 'btn-primary' : 'btn'}
             aria-pressed={action === a}
-            onClick={() => setAction(action === a ? null : a)}
+            onClick={() => {
+              setAction(action === a ? null : a)
+              setFeedback({})
+            }}
           >
             {meta.actions[a].label}
           </button>

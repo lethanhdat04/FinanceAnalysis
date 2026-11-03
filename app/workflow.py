@@ -46,6 +46,7 @@ def apply_action(s: Session, case: Case, action: str, user: str, role: str, note
                  conclusion: str | None = None, signal_feedback: dict | None = None) -> Decision:
     if action not in ACTIONS:
         raise WorkflowError(f'Thao tác không tồn tại: {action}')
+    s.refresh(case, with_for_update=True)     # khóa hồ sơ và đọc lại trạng thái mới nhất (hai người bấm cùng lúc)
     a = ACTIONS[action]
     if role != a.role:
         raise WorkflowError(f'"{a.label}" chỉ dành cho vai trò {a.role}')
@@ -53,9 +54,9 @@ def apply_action(s: Session, case: Case, action: str, user: str, role: str, note
         if action == 'chap_nhan' and case.level == 'Cảnh báo cao' and case.status == a.from_status:
             raise WorkflowError('Hồ sơ Cảnh báo cao phải chuyển quản lý phê duyệt (Điều 6 quy chế)')
         raise WorkflowError(f'Không thể "{a.label}" khi hồ sơ đang ở trạng thái "{case.status}"')
-    conclusion = conclusion or a.conclusion
-    if conclusion is not None and conclusion not in CONCLUSIONS:
-        raise WorkflowError(f'Kết luận không hợp lệ: {conclusion}')
+    if conclusion is not None and conclusion != a.conclusion:          # kết luận do thao tác quyết định, không tự chọn
+        raise WorkflowError(f'"{a.label}" không đi với kết luận {conclusion}')
+    conclusion = a.conclusion
     feedback = signal_feedback or {}
     bad = {k: v for k, v in feedback.items() if v not in SIGNAL_VERDICTS}
     if bad:

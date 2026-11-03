@@ -149,6 +149,7 @@ function useDecide(onDone: (msg: string) => void) {
       qc.invalidateQueries({ queryKey: ['calibration'] })
       qc.invalidateQueries({ queryKey: ['cases'] })
       qc.invalidateQueries({ queryKey: ['stats'] })
+      qc.invalidateQueries({ queryKey: ['case'] })
     },
   })
 }
@@ -174,6 +175,13 @@ function ProposalItem({ p, tau, manager, onDone }: ItemProps & { p: CalibrationP
     <li>
       <p className="calib-text">{p.title}</p>
       <Evidence p={p} tau={tau} />
+      {p.previous && (
+        <p className="sub">
+          Đã {p.previous.status === 'tu_choi' ? 'bị từ chối' : 'được gỡ'} trước đây bởi {p.previous.decided_by}
+          {p.previous.n != null && ` khi có ${p.previous.n} phản hồi`}
+          {p.previous.note && ` (${p.previous.note})`}; được đề xuất lại vì có thêm phản hồi.
+        </p>
+      )}
       {manager && (
         <div className="calib-act">
           <input
