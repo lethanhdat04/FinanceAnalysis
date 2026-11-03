@@ -108,7 +108,8 @@ class CaseEngine:
         spent = self.df[(self.df.agency_id == agency_id) & (self.df.expense_group == group) & (self.df.month == month)]
         budget, total = float(b.budget.iloc[0]), float(spent.amount.sum())
         return {'agency_id': agency_id, 'expense_group': group, 'group_name': GROUPS.get(group, group),
-                'month': str(month), 'budget': budget, 'spent': round(total, 2), 'ratio': round(total / budget, 3)}
+                'month': str(month), 'budget': budget, 'spent': round(total, 2), 'ratio': round(total / budget, 3),
+                'remaining': round(budget - total, 2)}     # tính sẵn bằng code, LLM không tự trừ
 
     def cardholder_history(self, txn_id: str, limit: int = 10) -> dict:
         r = self.row(txn_id)

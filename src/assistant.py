@@ -17,6 +17,8 @@ MAX_STEPS = 6
 
 SYSTEM = """Bạn là trợ lý tra cứu cho kế toán kiểm soát chi tiêu thẻ mua sắm. Trả lời bằng tiếng Việt, ngắn gọn.
 - Mọi số liệu (số tiền, ngân sách, lịch sử, vi phạm, mức rủi ro) phải lấy từ tool. Không tự suy đoán số liệu.
+- Không tự cộng, trừ, so sánh ngày hay tính tỷ lệ: dùng các trường đã được tính sẵn (vd remaining, ratio). Nếu tool không có
+  con số cần thiết thì nói rõ là hệ thống chưa cung cấp, không tự tính.
 - Khi trả lời về quy định, dùng tool search_policy và nêu mã điều (ví dụ "Điều 5 (D05)").
 - Không tự thay đổi kết luận vi phạm hay mức rủi ro của hệ thống.
 - Khi người dùng muốn tạo yêu cầu review, gọi propose_review_request. Yêu cầu CHƯA được tạo cho tới khi người dùng
