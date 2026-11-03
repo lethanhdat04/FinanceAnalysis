@@ -131,7 +131,9 @@ class InvestigationAgent:
         """on_event(kind, data): báo tiến độ (plan, step, report) để giao diện hiển thị trong lúc chạy."""
         emit = on_event or (lambda kind, data: None)
         self.client = self.client or get_client()
-        t0, usage, trace = time.time(), {'prompt_tokens': 0, 'completion_tokens': 0, 'llm_calls': 0}, []
+        t0, trace = time.time(), []
+        # api_time_s: thời gian Groq xử lý (không gồm thời gian chờ hạn mức) – dùng để so sánh chi phí thời gian
+        usage = {'prompt_tokens': 0, 'completion_tokens': 0, 'llm_calls': 0, 'api_time_s': 0.0}
         self._current_txn = txn_id
         case = self.engine.case(txn_id)
         known_ids = {txn_id}
@@ -148,6 +150,7 @@ class InvestigationAgent:
             usage['prompt_tokens'] += getattr(u, 'prompt_tokens', 0) or 0
             usage['completion_tokens'] += getattr(u, 'completion_tokens', 0) or 0
             usage['llm_calls'] += 1
+            usage['api_time_s'] += getattr(u, 'total_time', 0) or 0
             return resp.choices[0].message
 
         case_text = json.dumps(llm_view(case), ensure_ascii=False, default=str)
