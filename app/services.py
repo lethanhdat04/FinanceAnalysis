@@ -30,6 +30,7 @@ class Services:
         self.loading_since = None
         self.chats: dict[str, Assistant] = {}
         self._lock = threading.Lock()
+        self._calibration = None
 
     @property
     def ready(self) -> bool:
@@ -44,6 +45,14 @@ class Services:
             self.engine = CaseEngine()
         except Exception as e:                       # lỗi nạp hiển thị ở /api/health
             self.error = repr(e)
+
+    @property
+    def calibration(self):
+        from app.calibration import CalibrationService
+        with self._lock:
+            if self._calibration is None:
+                self._calibration = CalibrationService(self.engine)
+            return self._calibration
 
     def load_in_background(self):
         threading.Thread(target=self.load, daemon=True).start()
@@ -66,11 +75,14 @@ from sqlalchemy import select as _select
 
 from app.models import Decision, Explanation
 
+SIMULATED_ACTION = 'phan_hoi_mo_phong'   # phản hồi do scripts/simulate_feedback.py sinh ra, không phải kết luận thật
+
 
 def past_decisions(signal: str) -> dict:
     """Kết luận trước đây của kế toán cho một loại cảnh báo (mã rule hoặc 'mo_hinh') – dùng cho công cụ của agent."""
     with SessionLocal() as s:
-        rows = [d for d in s.execute(_select(Decision).order_by(Decision.id.desc())).scalars() if signal in (d.signal_feedback or {})]
+        q = _select(Decision).where(Decision.action != SIMULATED_ACTION).order_by(Decision.id.desc())
+        rows = [d for d in s.execute(q).scalars() if signal in (d.signal_feedback or {})]
     verdicts = [d.signal_feedback[signal] for d in rows]
     return {'signal': signal, 'so_lan_danh_gia': len(rows), 'canh_bao_dung': verdicts.count('dung'),
             'canh_bao_gia': verdicts.count('canh_bao_gia'),

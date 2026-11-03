@@ -126,6 +126,20 @@ function Findings({ d, meta }: { d: Detail; meta: Meta }) {
           </ul>
         </div>
       )}
+      {d.calibrations.length > 0 && (
+        <div className="signal signal-lowered">
+          <span className="finding-code">Đã hạ mức theo hiệu chỉnh quản lý đã duyệt</span>
+          <ul>
+            {d.calibrations.map((c) => (
+              <li key={c.key}>
+                {c.title}{' '}
+                <span className="muted">(duyệt bởi {c.decided_by})</span>
+              </li>
+            ))}
+          </ul>
+          <p className="hint">Tín hiệu vẫn được ghi lại ở trên nhưng không còn làm tăng mức rủi ro của hồ sơ.</p>
+        </div>
+      )}
       {a && (
         <dl className="minor">
           <div>
@@ -375,14 +389,16 @@ function History({ d, meta }: { d: Detail; meta: Meta }) {
       <ol className="timeline">
         {d.decisions.map((x, i) => (
           <li key={i}>
-            <strong>{meta.actions[x.action]?.label ?? x.action}</strong>
+            <strong>{x.action === 'phan_hoi_mo_phong' ? 'Phản hồi mô phỏng' : (meta.actions[x.action]?.label ?? x.action)}</strong>
             <span className="sub">
               {x.user}, {new Date(x.created_at).toLocaleString('vi-VN')}
             </span>
-            <span className="sub">
-              {x.from} sang {x.to}
-              {x.conclusion && `; kết luận: ${meta.conclusions[x.conclusion]}`}
-            </span>
+            {x.from !== x.to && (
+              <span className="sub">
+                {x.from} sang {x.to}
+                {x.conclusion && `; kết luận: ${meta.conclusions[x.conclusion]}`}
+              </span>
+            )}
             {Object.keys(x.signal_feedback).length > 0 && (
               <span className="sub">
                 {Object.entries(x.signal_feedback)

@@ -1,6 +1,6 @@
 // Kiểu dữ liệu và hàm gọi API backend (app/main.py)
 
-export type Level = 'Cảnh báo cao' | 'Cần review'
+export type Level = 'Cảnh báo cao' | 'Cần review' | 'Bình thường'   // Bình thường: đã hạ mức do hiệu chỉnh
 export type Role = 'ke_toan' | 'quan_ly'
 
 export interface CaseRow {
@@ -107,6 +107,7 @@ export interface CaseDetail {
   explanations: Explanation[]
   decisions: DecisionRow[]
   review_requests: ReviewRequestRow[]
+  calibrations: { key: string; signal: string; title: string; text: string; decided_by: string; txn_ids: string[] }[]
 }
 
 export interface Meta {
@@ -185,6 +186,51 @@ export const api = {
       body: JSON.stringify({ session_id, user }),
     }),
   reviewRequests: () => request<ReviewRequestRow[]>('/api/review-requests'),
+  calibration: () => request<CalibrationState>('/api/calibration'),
+  decideCalibration: (body: { key: string; decision: 'ap_dung' | 'tu_choi' | 'go_bo'; user: string; role: Role; note: string }) =>
+    request<{ key: string; status: string; cases_changed: number }>('/api/calibration/decide', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+}
+
+// ---------------------------------------------------------------- học từ phản hồi (hướng B)
+export interface CalibrationProposal {
+  key: string
+  signal: string
+  context: Record<string, string>
+  n: number
+  n_true: number
+  precision: number
+  p_below: number
+  affected: number
+  title: string
+  text: string
+}
+
+export interface CalibrationRecord {
+  key: string
+  signal: string
+  context: Record<string, string>
+  status: 'dang_ap_dung' | 'tu_choi' | 'da_go'
+  title: string
+  text: string
+  stats: { n: number; n_true: number; precision: number; affected: number }
+  decided_by: string
+  decided_at: string | null
+  note: string
+  now: CalibrationProposal | null
+  revoke_suggested: boolean
+}
+
+export interface CalibrationState {
+  settings: { tau: number; noise: number; confidence: number; revoke_below: number; min_n: number }
+  n_feedback: number
+  n_simulated: number
+  summary: { signal: string; name: string; protected: boolean; n: number; n_true: number; n_simulated: number }[]
+  proposals: CalibrationProposal[]
+  active: CalibrationRecord[]
+  history: CalibrationRecord[]
 }
 
 // ---------------------------------------------------------------- định dạng

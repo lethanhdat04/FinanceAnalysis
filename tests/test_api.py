@@ -97,7 +97,7 @@ def test_services_not_ready_returns_503(client):
 
 def test_stats_and_meta(client):
     st = client.get('/api/stats').json()
-    assert st['cases'] == 2 and st['by_level'] == {'Cảnh báo cao': 1, 'Cần review': 1}
+    assert st['cases'] == 2 and st['by_level'] == {'Cảnh báo cao': 1, 'Cần review': 1, 'Bình thường': 0}
     assert client.get('/api/meta').json()['months'] == ['2026-06']
 
 

@@ -101,6 +101,20 @@ class ReviewRequest(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
 
+class Calibration(Base):
+    """Hiệu chỉnh do quản lý quyết định từ đề xuất của cơ chế học từ phản hồi (src/feedback.py)."""
+    __tablename__ = 'calibrations'
+    key: Mapped[str] = mapped_column(String(300), primary_key=True)
+    signal: Mapped[str] = mapped_column(String(20), index=True)
+    context: Mapped[dict] = mapped_column(JSON)
+    status: Mapped[str] = mapped_column(String(20), index=True)      # dang_ap_dung | tu_choi | da_go
+    stats: Mapped[dict] = mapped_column(JSON, default=dict)           # số phản hồi lúc quyết định
+    text: Mapped[str] = mapped_column(Text)
+    decided_by: Mapped[str] = mapped_column(String(60))
+    note: Mapped[str] = mapped_column(Text, default='')
+    decided_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
+
+
 class AuditLog(Base):
     __tablename__ = 'audit_log'
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)

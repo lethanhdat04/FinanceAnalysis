@@ -54,6 +54,12 @@ export default function CaseList() {
             <dt>Cần review</dt>
             <dd className="num review">{stats.data.by_level['Cần review'].toLocaleString('vi-VN')}</dd>
           </div>
+          {stats.data.by_level['Bình thường'] > 0 && (
+            <div>
+              <dt>Đã hạ mức do hiệu chỉnh</dt>
+              <dd className="num muted">{stats.data.by_level['Bình thường'].toLocaleString('vi-VN')}</dd>
+            </div>
+          )}
           <div>
             <dt>Chưa xử lý</dt>
             <dd className="num">{stats.data.by_status['Chờ review'].toLocaleString('vi-VN')}</dd>
@@ -86,6 +92,7 @@ export default function CaseList() {
             <option value="">Tất cả</option>
             <option>Cảnh báo cao</option>
             <option>Cần review</option>
+            <option value="Bình thường">Đã hạ mức (hiệu chỉnh)</option>
           </select>
         </label>
         <label>
@@ -157,7 +164,7 @@ export default function CaseList() {
                 {list.data.items.map((c) => (
                   <tr
                     key={c.id}
-                    className={c.level === 'Cảnh báo cao' ? 'row-high' : 'row-review'}
+                    className={c.level === 'Cảnh báo cao' ? 'row-high' : c.level === 'Cần review' ? 'row-review' : 'row-lowered'}
                     onClick={() => navigate(caseUrl(c.id))}
                   >
                     <td>

@@ -1,5 +1,6 @@
 import { NavLink, Route, Routes } from 'react-router-dom'
 import Assistant from './pages/Assistant'
+import Calibration from './pages/Calibration'
 import CaseDetail from './pages/CaseDetail'
 import CaseList from './pages/CaseList'
 import Reviews from './pages/Reviews'
@@ -20,6 +21,7 @@ export default function App() {
           <NavLink to="/" end>Hồ sơ cần xem</NavLink>
           <NavLink to="/tro-ly">Trợ lý tra cứu</NavLink>
           <NavLink to="/yeu-cau-review">Yêu cầu review</NavLink>
+          <NavLink to="/hieu-chinh">Hiệu chỉnh cảnh báo</NavLink>
         </nav>
         <label className="who">
           <span>Đang làm việc với vai trò</span>
@@ -38,6 +40,7 @@ export default function App() {
           <Route path="/ho-so/:id" element={<CaseDetail />} />
           <Route path="/tro-ly" element={<Assistant />} />
           <Route path="/yeu-cau-review" element={<Reviews />} />
+          <Route path="/hieu-chinh" element={<Calibration />} />
           <Route path="*" element={<p className="empty">Không tìm thấy trang này.</p>} />
         </Routes>
       </main>

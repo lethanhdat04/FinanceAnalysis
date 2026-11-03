@@ -15,7 +15,7 @@ from app.workflow import ACTIONS, CONCLUSIONS, SIGNAL_VERDICTS, STATUSES, Workfl
 from src.labels import GROUPS
 from src.rules import RULE_NAMES
 
-LEVEL_ORDER = {'Cảnh báo cao': 0, 'Cần review': 1}
+LEVEL_ORDER = {'Cảnh báo cao': 0, 'Cần review': 1, 'Bình thường': 2}   # Bình thường: đã hạ mức do hiệu chỉnh
 ROLES = {'ke_toan': 'Kế toán', 'quan_ly': 'Quản lý'}
 
 
@@ -105,7 +105,7 @@ def list_cases(level: str | None = None, status: str | None = None, kind: str | 
         stmt = stmt.where(or_(Case.title.ilike(like), Case.cardholder_id.ilike(like), Case.agency.ilike(like),
                               Case.id.ilike(like)))
     total = s.execute(select(func.count()).select_from(stmt.subquery())).scalar()
-    level_rank = case_expr((Case.level == 'Cảnh báo cao', 0), else_=1)     # không sắp theo chữ: "Cần" > "Cảnh"
+    level_rank = case_expr((Case.level == 'Cảnh báo cao', 0), (Case.level == 'Cần review', 1), else_=2)  # không sắp theo chữ
     rows = s.execute(stmt.order_by(level_rank, Case.tx_date.desc(), Case.total_amount.desc())
                      .offset((page - 1) * size).limit(size)).scalars().all()
     return {'total': total, 'page': page, 'size': size, 'items': [case_row(c) for c in rows]}
@@ -123,9 +123,10 @@ def case_detail(case_id: str, role: str = 'ke_toan', s: Session = Depends(get_se
         hits_by.setdefault(h.txn_id, []).append({'rule_id': h.rule_id, 'rule_name': RULE_NAMES[h.rule_id],
                                                  'severity': h.severity, 'message': h.message,
                                                  'related_txn_ids': h.related_txn_ids})
-    analysis = None
+    analysis, calibrations = None, []
     if services.ready and txns:
         analysis = services.engine.case(representative_txn(txns, hits_by))
+        calibrations = services.calibration.for_case(s, ids)
     expl = s.execute(select(Explanation).where(Explanation.case_id == case_id)
                      .order_by(Explanation.id.desc())).scalars().all()
     decisions = s.execute(select(Decision).where(Decision.case_id == case_id).order_by(Decision.id)).scalars().all()
@@ -138,6 +139,7 @@ def case_detail(case_id: str, role: str = 'ke_toan', s: Session = Depends(get_se
                           'expense_group': t.expense_group, 'final_level': t.final_level,
                           'anomaly_tx_flag': t.anomaly_tx_flag, 'rule_hits': hits_by.get(t.txn_id, [])} for t in txns],
         'analysis': analysis,
+        'calibrations': calibrations,
         'explanations': [{'id': e.id, 'kind': e.kind, 'model': e.model, 'created_at': e.created_at.isoformat(),
                           **e.payload} for e in expl],
         'decisions': [{'user': d.user, 'role': d.role, 'action': d.action, 'from': d.from_status, 'to': d.to_status,
@@ -310,3 +312,30 @@ def create_review_request(case_id: str, body: ReviewFromDraftIn, s: Session = De
     s.add(AuditLog(case_id=case_id, user=body.user, action='tao_yeu_cau_review', detail=body.model_dump()))
     s.commit()
     return {'id': rr.id, 'status': rr.status}
+
+
+# ---------------------------------------------------------------- học từ phản hồi (hướng B)
+from app.calibration import CalibrationError  # noqa: E402
+
+
+@app.get('/api/calibration')
+def calibration_state(s: Session = Depends(get_session), svc=Depends(need_services)):
+    return svc.calibration.state(s)
+
+
+class CalibrationDecisionIn(BaseModel):
+    key: str
+    decision: str          # ap_dung | tu_choi | go_bo
+    user: str
+    role: str
+    note: str = ''
+
+
+@app.post('/api/calibration/decide')
+def calibration_decide(body: CalibrationDecisionIn, s: Session = Depends(get_session), svc=Depends(need_services)):
+    try:
+        out = svc.calibration.decide(s, body.key, body.decision, body.user, body.role, body.note)
+    except CalibrationError as e:
+        raise HTTPException(409, str(e))
+    s.commit()
+    return out
