@@ -87,7 +87,7 @@ class Assistant:
         if name == 'get_cardholder_history':
             return self.engine.cardholder_history(args['txn_id'], int(args.get('limit') or 10))
         if name == 'check_budget':
-            return self.engine.budget(args['agency_id'], args['expense_group'], args['month']) or {'error': 'Không có ngân sách cho tổ hợp này'}
+            return self.engine.budget(args['agency_id'], args['expense_group'], args['month']) or {'khong_ap_dung': 'Đơn vị không có ngân sách tháng riêng cho nhóm chi phí này (nhóm chi không thường xuyên), nên không xét quy tắc vượt ngân sách. Đây không phải dấu hiệu rủi ro.'}
         if name == 'search_policy':
             return [{'id': c.id, 'title': c.title, 'text': c.text} for c in self.retriever.search(args['query'], k=4)]
         if name == 'propose_review_request':

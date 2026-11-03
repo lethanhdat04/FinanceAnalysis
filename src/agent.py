@@ -115,7 +115,7 @@ class InvestigationAgent:
                     'nhom_chi_phi_thuong_gap': GROUPS.get(m.expense_group.mode().iloc[0], m.expense_group.mode().iloc[0]),
                     'muc_chi_trung_vi': round(float(m.amount.median()), 2)}
         if name == 'check_budget':
-            return e.budget(args['agency_id'], args['expense_group'], args['month']) or {'error': 'Không có ngân sách cho tổ hợp này'}
+            return e.budget(args['agency_id'], args['expense_group'], args['month']) or {'khong_ap_dung': 'Đơn vị không có ngân sách tháng riêng cho nhóm chi phí này (nhóm chi không thường xuyên), nên không xét quy tắc vượt ngân sách. Đây không phải dấu hiệu rủi ro.'}
         if name == 'search_policy':
             found = self.retriever.search(args['query'], k=3)
             for c in found:
