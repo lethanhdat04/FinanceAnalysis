@@ -1,0 +1,26 @@
+[
+ {
+  "txn_id": "202607-031599",
+  "kind": "Cảnh báo cao (rule)"
+ },
+ {
+  "txn_id": "202606-010677",
+  "kind": "Cảnh báo cao (rule)"
+ },
+ {
+  "txn_id": "202608-012960",
+  "kind": "Chỉ mô hình bất thường"
+ },
+ {
+  "txn_id": "202606-009499",
+  "kind": "Cụm mua dồn"
+ },
+ {
+  "txn_id": "202608-008438",
+  "kind": "Cần review (rule)"
+ },
+ {
+  "txn_id": "202606-028966",
+  "kind": "Amazon – bình thường"
+ }
+]
