@@ -29,7 +29,9 @@ Yêu cầu:
    không rút gọn, không thêm "...").
 6. Nêu cụ thể những thông tin, chứng từ kế toán cần kiểm tra, và các bước xử lý tiếp theo theo quy chế.
 7. Dấu hiệu bất thường không phải là kết luận vi phạm; diễn đạt thận trọng.
-8. Không khẳng định những điều hồ sơ không có thông tin (ví dụ "không có phê duyệt", "không có hóa đơn");
+8. Khi nêu số liệu, giữ nguyên các con số đi cùng nhau trong CÙNG một thông báo hoặc trường dữ liệu; không ghép số tiền của
+   trường này với tỷ lệ phần trăm của trường khác.
+9. Không khẳng định những điều hồ sơ không có thông tin (ví dụ "không có phê duyệt", "không có hóa đơn");
    thay vào đó đưa chúng vào danh sách cần kiểm tra."""
 
 SYSTEM_CLASSIFY = """Bạn phân loại mặt hàng mua bằng thẻ mua sắm của cơ quan nhà nước và trường đại học vào nhóm chi phí.
@@ -109,14 +111,65 @@ def validate_explanation(result: dict, chunks, case: dict) -> list[str]:
     for r in result.get('reasons', []):
         if r['source'] == 'rule' and r['ref'] and r['ref'] not in valid_rules:
             warnings.append(f"Lý do nhắc tới {r['ref']} nhưng hồ sơ không có vi phạm này.")
+    texts = [result.get('summary', '')] + [r['text'] for r in result.get('reasons', [])]
+    warnings += check_number_pairs(texts, case, [c.text for c in chunks])
     if not result.get('citations'):
         warnings.append('Không có trích dẫn quy chế hợp lệ.')
     return warnings
 
 
+def budget_sentence(b: dict | None) -> str | None:
+    """Câu tóm tắt ngân sách do code viết sẵn: cặp số tiền – tỷ lệ đã ghép đúng, LLM chỉ cần chép lại."""
+    if not b:
+        return None
+    state = f"vượt ${-b['remaining']:,.2f}" if b['remaining'] < 0 else f"còn ${b['remaining']:,.2f}"
+    return (f"Tổng chi CẢ THÁNG {b['month']} của nhóm {b['group_name']}: ${b['spent']:,.2f} trên ngân sách "
+            f"${b['budget']:,.2f} ({b['ratio']:.0%}), {state}.")
+
+
+def llm_view(case: dict) -> dict:
+    """Bản hồ sơ đưa cho LLM: thay các con số ngân sách rời bằng câu tóm tắt viết sẵn."""
+    view = dict(case)
+    if case.get('budget'):
+        view['budget'] = budget_sentence(case['budget'])
+    return view
+
+
+def number_sources(case: dict) -> list[str]:
+    srcs = [h.get('message', '') for h in case.get('rule_hits', [])]
+    anom = case.get('anomaly') or {}
+    srcs += anom.get('reasons', []) + ([anom['burst_day']['description']] if anom.get('burst_day') else [])
+    if case.get('budget'):
+        srcs.append(budget_sentence(case['budget']))
+    return srcs
+
+
+AMOUNT = re.compile(r'\$\s?([\d,]+\.\d{2})')
+PCT = re.compile(r'(\d{1,4})\s?%')
+CLAUSE = re.compile(r';|\.\s|\n|\.$')     # dấu chấm trong số tiền ($18,220.59) không tách vế
+
+
+def check_number_pairs(texts: list[str], case: dict, policy_texts: list[str] = ()) -> list[str]:
+    """Trong mỗi vế câu có tỷ lệ %, mọi số tiền và tỷ lệ phải cùng xuất hiện trong MỘT nguồn của hồ sơ.
+    Bắt lỗi ghép số, vd tổng chi cả tháng ghép với tỷ lệ lũy kế tại thời điểm giao dịch.
+    Tỷ lệ có trong văn bản quy chế (ngưỡng 90%, 100%) là ngưỡng chung, không phải số liệu của hồ sơ nên được bỏ qua."""
+    srcs = number_sources(case)
+    policy_pcts = {p for t in policy_texts for p in PCT.findall(t)}
+    out = []
+    for t in texts:
+        for clause in CLAUSE.split(t):
+            pcts, amounts = [p for p in PCT.findall(clause) if p not in policy_pcts], AMOUNT.findall(clause)
+            if not pcts or not amounts:
+                continue
+            if not any(all(a in src for a in amounts) and all(f'{p}%' in src for p in pcts) for src in srcs):
+                out.append(f'Số liệu có thể bị ghép sai: {", ".join("$" + a for a in amounts)} đi với '
+                           f'{", ".join(p + "%" for p in pcts)} không cùng xuất hiện trong một nguồn của hồ sơ.')
+    return out
+
+
 def _case_prompt(case: dict, chunks) -> str:
     articles = '\n\n'.join(f'[{c.id}] {c.title}\n{c.text}' for c in chunks)
-    return f'HỒ SƠ GIAO DỊCH (JSON):\n{json.dumps(case, ensure_ascii=False, default=str)}\n\nĐIỀU QUY CHẾ:\n{articles}'
+    return f'HỒ SƠ GIAO DỊCH (JSON):\n{json.dumps(llm_view(case), ensure_ascii=False, default=str)}\n\nĐIỀU QUY CHẾ:\n{articles}'
 
 
 def explain_case(case: dict, chunks, client=None, model: str = MODEL_EXPLAIN, reasoning_effort: str = 'medium') -> dict:

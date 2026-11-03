@@ -109,7 +109,9 @@ class CaseEngine:
         budget, total = float(b.budget.iloc[0]), float(spent.amount.sum())
         return {'agency_id': agency_id, 'expense_group': group, 'group_name': GROUPS.get(group, group),
                 'month': str(month), 'budget': budget, 'spent': round(total, 2), 'ratio': round(total / budget, 3),
-                'remaining': round(budget - total, 2)}     # tính sẵn bằng code, LLM không tự trừ
+                'remaining': round(budget - total, 2),     # tính sẵn bằng code, LLM không tự trừ
+                'note': 'spent/ratio/remaining là tổng CẢ THÁNG; lũy kế tại thời điểm giao dịch nằm trong thông báo R05 '
+                        '(nếu có) – hai bộ số này khác nhau, không ghép lẫn'}
 
     def cardholder_history(self, txn_id: str, limit: int = 10) -> dict:
         r = self.row(txn_id)

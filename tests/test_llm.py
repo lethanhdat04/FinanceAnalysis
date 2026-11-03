@@ -118,3 +118,21 @@ def test_group_specific_articles_only_for_matching_group():
     assert 'D08' in car and 'D19' in car and 'D17' not in car and 'D18' not in car
     hotel = [c.id for c in RETRIEVER.required_for(rule_ids=['R03'], groups=['LODGING'])]
     assert 'D18' in hotel and 'D17' not in hotel
+
+
+def test_number_pair_check_flags_mixed_budget_figures():
+    from src.llm import check_number_pairs, llm_view
+    case = {'rule_hits': [{'message': 'Giao dịch làm lũy kế chi $18,220.59 vượt ngân sách tháng $17,870.00 (102%).'}],
+            'anomaly': {'reasons': [], 'burst_day': None},
+            'budget': {'month': '2026-08', 'group_name': 'Xe cộ', 'spent': 19689.61, 'budget': 17870.0,
+                       'ratio': 1.102, 'remaining': -1819.61}}
+    ok = 'Lũy kế chi $18,220.59 vượt ngân sách $17,870.00 (102%).'
+    mixed = 'Lũy kế chi $19,689.61 so với dự toán (102%).'
+    assert check_number_pairs([ok], case) == []
+    assert len(check_number_pairs([mixed], case)) == 1
+    real_error = 'Giao dịch vượt ngân sách, lũy kế chi $19,689.61 so với dự toán $17,870.00 (102%), vi phạm quy định.'
+    assert len(check_number_pairs([real_error], case)) == 1   # lỗi thật đã gặp
+    with_threshold = 'Lũy kế chi $18,220.59 vượt ngân sách $17,870.00 (102%), vượt 100% dự toán.'
+    assert check_number_pairs([with_threshold], case, ['Khoản chi làm lũy kế vượt 100% dự toán phải được phê duyệt']) == []
+    assert check_number_pairs(['Tổng chi cả tháng $19,689.61 trên ngân sách $17,870.00 (110%)'], case) == []
+    assert isinstance(llm_view(case)['budget'], str) and 'vượt $1,819.61' in llm_view(case)['budget']
