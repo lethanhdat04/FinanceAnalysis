@@ -1,0 +1,19 @@
+services:
+  db:
+    image: postgres:17
+    container_name: thesis-db
+    environment:
+      POSTGRES_DB: thesis
+      POSTGRES_USER: thesis
+      POSTGRES_PASSWORD: thesis   # chỉ dùng trên máy phát triển
+    ports:
+      - "5433:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U thesis -d thesis"]
+      interval: 5s
+      retries: 10
+
+volumes:
+  pgdata:
