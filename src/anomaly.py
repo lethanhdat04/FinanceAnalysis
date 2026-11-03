@@ -176,7 +176,8 @@ def inject_anomalies(df: pd.DataFrame, period_start: pd.Period, n_per_type: int 
 
     - spike: số tiền gấp 8–15 lần, chọn khoản gốc < $300 để kết quả vẫn dưới hạn mức $5.000 (rule R02 không bắt)
     - unusual_merchant: người chi mua ở cửa hàng thuộc nhóm chi phí họ chưa từng chi
-    - burst: 6 giao dịch trong cùng một ngày tại các cửa hàng khác nhau
+    - burst: 6 giao dịch trong cùng một ngày tại 6 cửa hàng khác nhau mà người đó từng mua (số tiền lệch 20–25%
+      so với lần mua cũ để không trùng hệt giao dịch có sẵn, tránh rule trùng hóa đơn / chia nhỏ bắt một cách giả tạo)
     - late_post: ghi sổ trễ 45–200 ngày
 
     spike, unusual_merchant, late_post là giao dịch thật bị BIẾN ĐỔI: cột source_index giữ chỉ số dòng gốc,
@@ -212,14 +213,19 @@ def inject_anomalies(df: pd.DataFrame, period_start: pd.Period, n_per_type: int 
     pool = pool.drop(unusual['source_index'])
 
     n_bursts = max(1, n_per_type // 6)
-    holders = pool.drop_duplicates('cardholder_id').sample(n_bursts, random_state=seed + 3)
+    positive = df[df['amount'] > 0]
+    n_merch = positive.groupby('cardholder_id')['merchant_norm'].nunique()
+    eligible = pool[pool['cardholder_id'].map(n_merch) >= 6]
+    holders = eligible.drop_duplicates('cardholder_id').sample(n_bursts, random_state=seed + 3)
     rows = []
     for _, h in holders.iterrows():
-        hist = df[df['cardholder_id'] == h['cardholder_id']]
-        picks = hist.sample(6, replace=len(hist) < 6, random_state=int(rng.integers(1e9)))
-        for _, p in picks.iterrows():
+        hist = positive[positive['cardholder_id'] == h['cardholder_id']].drop_duplicates('merchant_norm')
+        picks = hist.sample(6, random_state=int(rng.integers(1e9)))
+        factor = rng.choice([-1, 1], 6) * rng.uniform(0.2, 0.25, 6) + 1
+        for (_, p), f in zip(picks.iterrows(), factor):
             r = p.copy()
             r['tx_date'], r['post_date'], r['month'] = h['tx_date'], h['post_date'], h['month']
+            r['amount'] = round(float(p['amount']) * f, 2)
             rows.append(r)
     out.append(pd.DataFrame(rows).assign(inject_type='burst'))
 

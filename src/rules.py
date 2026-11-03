@@ -119,11 +119,13 @@ def r05_budget(df, cfg, budgets: pd.DataFrame | None):
     b = budgets.assign(month=pd.PeriodIndex(budgets['month'], freq='M'))
     d = df.sort_values(['tx_date', 'txn_id']).merge(b[keys + ['budget']], on=keys, how='inner')
     cum = d.groupby(keys)['amount'].cumsum()
-    prev = cum - d['amount']
+    # Mốc cao nhất lũy kế đã đạt trước giao dịch này: hoàn tiền làm lũy kế giảm xuống dưới ngân sách thì giao dịch
+    # sau đó không phải lần "vượt" mới (tránh báo mức Cao lần thứ hai trong cùng tháng)
+    prev_peak = cum.groupby([d[k] for k in keys]).cummax().groupby([d[k] for k in keys]).shift().fillna(0.0)
     warn = c['warn_ratio'] * d['budget']
-    cross_over = (prev <= d['budget']) & (cum > d['budget'])
-    cross_warn = (prev < warn) & (cum >= warn) & ~cross_over
-    after = (prev > d['budget']) & (d['amount'] > 0)
+    cross_over = (prev_peak <= d['budget']) & (cum > d['budget'])
+    cross_warn = (prev_peak < warn) & (cum >= warn) & ~cross_over
+    after = (prev_peak > d['budget']) & (d['amount'] > 0)
 
     parts = []
     for mask, sev, text in [

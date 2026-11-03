@@ -81,6 +81,16 @@ def test_r05_budget_warning_overrun_and_after():
     assert h.to_dict() == {'t1': c['severity_warn'], 't2': c['severity_over'], 't3': c['severity_after']}
 
 
+
+def test_r05_refund_does_not_create_a_second_overrun():
+    budgets = pd.DataFrame({'agency_id': ['A'], 'expense_group': ['OFFICE_PRINT'], 'month': ['2026-03'], 'budget': [1000.0]})
+    df = make([{'amount': 900, 'tx_date': '2026-03-02'}, {'amount': 200, 'tx_date': '2026-03-03'},     # 1100 → vượt
+               {'amount': -200, 'tx_date': '2026-03-04'}, {'amount': 150, 'tx_date': '2026-03-05'}])   # hoàn tiền, mua tiếp
+    h = rule_hits(df, 'R05', budgets=budgets).set_index('txn_id').severity
+    c = CFG['R05']
+    assert h.to_dict() == {'t0': c['severity_warn'], 't1': c['severity_over'], 't3': c['severity_after']}
+
+
 def test_r06_cash_like():
     df = make([{'mcc_desc': 'WIRE TRANSFER MONEY ORDERS'}])
     assert rule_hits(df, 'R06').txn_id.tolist() == ['t0']
