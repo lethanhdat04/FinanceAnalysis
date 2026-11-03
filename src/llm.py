@@ -39,12 +39,14 @@ Mô tả mặt hàng thường bị cắt ngắn (khoảng 26 ký tự), có th�
 Chọn nhóm theo mục đích sử dụng của món hàng. Nếu mô tả quá mơ hồ để xác định, chọn UNKNOWN."""
 
 
-def chat(client, max_wait_s: float = 120, retries: int = 8, **kw):
+def chat(client, max_wait_s: float | None = None, retries: int = 8, **kw):
     """Gọi chat.completions.create; khi bị giới hạn tốc độ (429) thì chờ theo retry-after rồi gọi lại."""
     try:
         from groq import RateLimitError
     except ImportError:                                   # client giả lập trong test
         RateLimitError = ()
+    # GROQ_MAX_WAIT_S: chờ lâu hơn khi chạy thí nghiệm dài (hạn mức token/ngày được hoàn lại dần)
+    max_wait_s = max_wait_s if max_wait_s is not None else float(os.getenv('GROQ_MAX_WAIT_S', 120))
     for attempt in range(retries):
         try:
             return client.chat.completions.create(**kw)

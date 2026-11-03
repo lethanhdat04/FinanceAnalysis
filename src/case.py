@@ -140,7 +140,8 @@ class CaseEngine:
             'transaction': {
                 'date': f"{r['tx_date']:%d/%m/%Y}", 'post_date': f"{r['post_date']:%d/%m/%Y}",
                 'agency': r['agency'], 'agency_id': r['agency_id'], 'cardholder': r['cardholder_id'],
-                'merchant': r['merchant'], 'item_desc': r['item_desc'], 'amount': float(r['amount']),
+                'merchant': r['merchant'], 'merchant_norm': r['merchant_norm'], 'item_desc': r['item_desc'],
+                'amount': float(r['amount']),
                 'mcc_desc': r['mcc_desc'],
             },
             'expense_group': {**cls, 'name': GROUPS.get(cls['group'], cls['group'])},

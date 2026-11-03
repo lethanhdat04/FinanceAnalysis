@@ -20,12 +20,18 @@ from src.llm import MODEL_EXPLAIN, chat, check_number_pairs, get_client, llm_vie
 
 MAX_TOOL_CALLS = 8
 MAX_ROWS = 25
+# Bản miễn phí của Groq giới hạn 8.000 token/phút cho MỘT request -> giữ mọi request nhỏ hơn mức này.
+TOOL_RESULT_CHARS = 1500     # kết quả công cụ đưa lại cho agent trong vòng tra cứu
+DIGEST_CHARS = 900           # mỗi kết quả trong bản tóm lược bằng chứng khi viết hồ sơ
+MAX_ARTICLES = 6             # số điều quy chế tối đa gửi kèm khi viết hồ sơ
 
 SYSTEM = """Bạn là agent điều tra hỗ trợ kế toán kiểm tra một hồ sơ giao dịch thẻ mua sắm đã bị hệ thống cảnh báo.
 Nhiệm vụ: thu thập bằng chứng bằng các công cụ CHỈ ĐỌC, rồi lập hồ sơ điều tra để kế toán quyết định.
 Nguyên tắc:
 - Vi phạm quy tắc, dấu hiệu bất thường và mức rủi ro đã được hệ thống tính; không tự kiểm tra lại hay thay đổi chúng.
 - Mọi số liệu phải lấy từ công cụ; không tự cộng trừ, không tự tính ngày hay tỷ lệ.
+- Lỗi hoặc kết quả rỗng của công cụ (vd gõ sai tên) KHÔNG phải là bằng chứng vi phạm; gọi lại với tham số đúng
+  (dùng đúng merchant_norm, txn_id trong hồ sơ) hoặc ghi là chưa tra cứu được.
 - Không khẳng định những điều không có thông tin (vd "chưa có phê duyệt", "không có hóa đơn"); đưa chúng vào danh sách cần kiểm tra.
 - Tìm cả bằng chứng làm GIẢM nghi ngờ (ví dụ mua định kỳ hợp lệ, nhà cung cấp quen, đơn vị khác cũng mua ở đó),
   không chỉ bằng chứng làm tăng nghi ngờ.
@@ -100,7 +106,9 @@ class InvestigationAgent:
         if name == 'get_merchant_profile':
             m = df[df.merchant_norm == args['merchant_norm']]
             if m.empty:
-                return {'error': f"Không có nhà cung cấp {args['merchant_norm']}"}
+                r = e.row(self._current_txn)
+                return {'error': f"Không tìm thấy merchant_norm '{args['merchant_norm']}'. Tên chuẩn hóa của nhà cung cấp "
+                                 f"trong hồ sơ là '{r.merchant_norm}'. Đây là lỗi tra cứu, không phải bằng chứng."}
             return {'merchant_norm': args['merchant_norm'], 'so_giao_dich': int(len(m)),
                     'so_nguoi_chi': int(m.cardholder_id.nunique()), 'so_don_vi': int(m.agency_id.nunique()),
                     'lan_dau_xuat_hien': str(m.month.min()), 'da_duoc_duyet': args['merchant_norm'] in e.approved,
@@ -124,6 +132,7 @@ class InvestigationAgent:
         emit = on_event or (lambda kind, data: None)
         self.client = self.client or get_client()
         t0, usage, trace = time.time(), {'prompt_tokens': 0, 'completion_tokens': 0, 'llm_calls': 0}, []
+        self._current_txn = txn_id
         case = self.engine.case(txn_id)
         known_ids = {txn_id}
         if case['anomaly'].get('burst_day'):
@@ -162,7 +171,7 @@ class InvestigationAgent:
                     {'role': 'user', 'content': f'HỒ SƠ:\n{case_text}\n\nKẾ HOẠCH:\n{json.dumps(plan, ensure_ascii=False)}\n\n'
                                                 f'Thực hiện kế hoạch bằng công cụ (tối đa {self.max_tool_calls} lần gọi). '
                                                 f'Khi đủ thông tin, trả lời "XONG" kèm tóm tắt ngắn những gì đã tìm thấy.'}]
-        n_calls = 0
+        n_calls, digest = 0, []
         while n_calls < self.max_tool_calls:
             msg = call(messages=messages, tools=TOOLS, tool_choice='auto', reasoning_effort='medium')
             calls = msg.tool_calls or []
@@ -183,22 +192,44 @@ class InvestigationAgent:
                 trace.append({'step': n_calls, 'tool': c.function.name, 'label': TOOL_LABELS.get(c.function.name, c.function.name),
                               'args': args, 'result_preview': text[:300], 'error': result.get('error') if isinstance(result, dict) else None,
                               'seconds': round(time.time() - s0, 2)})
-                messages.append({'role': 'tool', 'tool_call_id': c.id, 'name': c.function.name, 'content': text[:8000]})
+                messages.append({'role': 'tool', 'tool_call_id': c.id, 'name': c.function.name,
+                                 'content': text[:TOOL_RESULT_CHARS]})
+                digest.append(f"[{n_calls}] {TOOL_LABELS.get(c.function.name, c.function.name)} {json.dumps(args, ensure_ascii=False)}: "
+                              f"{text[:DIGEST_CHARS]}")
                 emit('step', trace[-1])
 
-        # 3. Viết hồ sơ điều tra, kiểm chứng, sửa một vòng nếu cần
+        # 3. Viết hồ sơ điều tra từ bản tóm lược bằng chứng (không gửi lại cả hội thoại), kiểm chứng, sửa một vòng
+        required = [c.id for c in self.retriever.required_for(
+            [h['rule_id'] for h in case['rule_hits']], case['anomaly']['signals'], [case['expense_group']['group']])]
+        order = required + [i for i in chunks if i not in required]
+        chunks = {i: chunks[i] for i in order[:MAX_ARTICLES]}
         schema = report_schema(sorted(known_ids), sorted(chunks), allowed_actions)
         actions_text = ', '.join(f'{a} ({(action_labels or {}).get(a, a)})' for a in allowed_actions) or 'không có'
-        messages.append({'role': 'user', 'content': (
+        notes = next((m['content'] for m in reversed(messages) if m['role'] == 'assistant' and m.get('content')), '')
+        messages = [{'role': 'system', 'content': SYSTEM}, {'role': 'user', 'content': (
+            f'HỒ SƠ:\n{case_text}\n\nBẰNG CHỨNG ĐÃ TRA CỨU:\n' + '\n'.join(digest)
+            + (f'\n\nGHI CHÚ CỦA AGENT:\n{notes[:800]}' if notes else '') + '\n\n'
             'Lập hồ sơ điều tra bằng tiếng Việt. Bằng chứng chỉ dùng mã giao dịch đã thấy. Trích dẫn là MỘT câu nguyên văn '
             f'trong các điều quy chế: {", ".join(sorted(chunks))}. Các thao tác hợp lệ của hồ sơ: {actions_text}; '
             'chọn khong_de_xuat nếu chưa đủ căn cứ. Giữ nguyên cặp số liệu như trong công cụ, không tự tính.\n\nĐIỀU QUY CHẾ:\n'
-            + '\n\n'.join(f'[{c.id}] {c.title}\n{c.text}' for c in chunks.values()))})
+            + '\n\n'.join(f'[{c.id}] {c.title}\n{c.text}' for c in chunks.values()))}]
         report, revisions, warnings = None, 0, []
         emit('writing', None)
         for attempt in range(2):
-            msg = call(messages=messages, reasoning_effort='medium',
-                       response_format={'type': 'json_schema', 'json_schema': {'name': 'investigation', 'strict': True, 'schema': schema}})
+            msg = None
+            for _ in range(2):                    # đầu ra bị cắt / không khớp schema -> yêu cầu viết ngắn hơn
+                try:
+                    msg = call(messages=messages, reasoning_effort='medium', max_completion_tokens=3000,
+                               response_format={'type': 'json_schema', 'json_schema': {'name': 'investigation', 'strict': True,
+                                                                                         'schema': schema}})
+                    break
+                except Exception as ex:
+                    if 'json_validate_failed' not in str(ex):
+                        raise
+                    messages.append({'role': 'user', 'content': 'Hồ sơ quá dài và bị cắt. Viết ngắn gọn hơn: tối đa 4 phát hiện, '
+                                                                'mỗi phát hiện 1-2 câu, mỗi phát hiện tối đa 5 mã giao dịch.'})
+            if msg is None:
+                raise RuntimeError('Agent không lập được hồ sơ hợp lệ sau khi yêu cầu viết ngắn hơn')
             report = json.loads(msg.content)
             warnings = self.validate(report, case, list(chunks.values()))
             if not warnings or attempt == 1:

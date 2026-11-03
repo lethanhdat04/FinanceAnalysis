@@ -168,9 +168,46 @@ def run_rulecheck(model: str, per_rule: int, n_clean: int, effort: str):
         print(f'  {mark} {t}: đúng={truth.get(t, [])} LLM={pred}')
 
 
+# ---------------------------------------------------------------- agent so với giải thích một bước
+def run_agent_compare(model: str):
+    """Cùng hồ sơ, cùng model: (1) giải thích một bước, (2) agent điều tra. Mẫu: 6 hồ sơ từ samples_explain.json."""
+    from app.services import past_decisions
+    from src.agent import InvestigationAgent
+    from src.case import CaseEngine
+    from src.rag import PolicyRetriever
+    from app.workflow import ACTIONS
+
+    eng, ret = CaseEngine(), PolicyRetriever()
+    base = json.loads((OUT / 'samples_explain.json').read_text(encoding='utf-8'))
+
+    def build():
+        picked, kinds = [], {}
+        for s in base:
+            if kinds.get(s['kind'], 0) < (2 if s['kind'] == 'Cảnh báo cao (rule)' else 1):
+                picked.append(s)
+                kinds[s['kind']] = kinds.get(s['kind'], 0) + 1
+        return picked
+    sample = stable_sample(OUT / 'samples_agent.json', build)
+    path = OUT / f'agent_compare_{model.split("/")[-1]}.jsonl'
+    todo = [s for s in sample if s['txn_id'] not in done_ids(path)]
+    print(f'agent: {len(sample)} hồ sơ, còn {len(todo)}')
+    client = get_client()
+    labels = {k: a.label for k, a in ACTIONS.items()}
+    for s in todo:
+        case = eng.case(s['txn_id'])
+        chunks = ret.retrieve_for_case(eng.retrieval_query(case), rule_ids=[h['rule_id'] for h in case['rule_hits']],
+                                       signals=case['anomaly']['signals'], groups=[case['expense_group']['group']])
+        single = explain_case(case, chunks, client=client, model=model)
+        allowed = ['yeu_cau_bo_sung', 'chuyen_phe_duyet'] + ([] if case['risk']['final_level'] == 'Cảnh báo cao' else ['chap_nhan'])
+        agent = InvestigationAgent(eng, ret, client=client, model=model, decisions_fn=past_decisions).run(s['txn_id'], allowed, labels)
+        append(path, {'txn_id': s['txn_id'], 'kind': s['kind'], 'case': case, 'single': single, 'agent': agent})
+        print(f"  {s['txn_id']} {s['kind']}: một bước {single['latency_s']}s | agent {agent['latency_s']}s, "
+              f"{agent['n_tool_calls']} tra cứu, {agent['revisions']} lần sửa, {len(agent['warnings'])} cảnh báo")
+
+
 if __name__ == '__main__':
     ap = argparse.ArgumentParser()
-    ap.add_argument('exp', choices=['explain', 'rulecheck'])
+    ap.add_argument('exp', choices=['explain', 'rulecheck', 'agent'])
     ap.add_argument('--model', default=None)
     ap.add_argument('--n', type=int, default=4, help='explain: số hồ sơ mỗi loại')
     ap.add_argument('--per-rule', type=int, default=4)
@@ -180,5 +217,7 @@ if __name__ == '__main__':
     a = ap.parse_args()
     if a.exp == 'explain':
         run_explain(a.n, a.model or MODEL_EXPLAIN, a.tag)
+    elif a.exp == 'agent':
+        run_agent_compare(a.model or 'openai/gpt-oss-20b')
     else:
         run_rulecheck(a.model or 'openai/gpt-oss-20b', a.per_rule, a.clean, a.effort)
