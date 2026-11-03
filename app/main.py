@@ -251,3 +251,62 @@ def transaction(txn_id: str, s: Session = Depends(get_session)):
     if t is None:
         raise HTTPException(404, f'Không tìm thấy giao dịch {txn_id}')
     return {c.name: getattr(t, c.name) for c in Transaction.__table__.columns}
+
+
+# ---------------------------------------------------------------- agent điều tra (hướng A)
+from app.services import jobs  # noqa: E402
+
+
+class InvestigateIn(BaseModel):
+    user: str
+    role: str = 'ke_toan'
+
+
+@app.post('/api/cases/{case_id:path}/investigate')
+def investigate(case_id: str, body: InvestigateIn, s: Session = Depends(get_session), svc=Depends(need_services)):
+    case = get_case(s, case_id)
+    running = [j for j in jobs.jobs.values() if j['case_id'] == case_id and j['status'] == 'dang_chay']
+    if running:
+        return {'job_id': running[0]['id']}
+    txns = s.execute(select(Transaction).where(Transaction.case_id == case_id)).scalars().all()
+    hits_by = {}
+    for h in s.execute(select(RuleHit).where(RuleHit.txn_id.in_([t.txn_id for t in txns]))).scalars():
+        hits_by.setdefault(h.txn_id, []).append({'severity': h.severity})
+    # Agent đề xuất HƯỚNG KẾT LUẬN: các thao tác của bước "Đang review" (Điều 6: cảnh báo cao không được Chấp nhận)
+    allowed = [k for k, a in ACTIONS.items() if a.from_status == 'Đang review' and a.role == 'ke_toan'
+               and not (k == 'chap_nhan' and case.level == 'Cảnh báo cao')]
+    labels = {k: a.label for k, a in ACTIONS.items()}
+    job_id = jobs.start(svc, case_id, representative_txn(txns, hits_by), allowed, labels, body.user)
+    s.add(AuditLog(case_id=case_id, user=body.user, action='bat_dau_dieu_tra', detail={'job_id': job_id}))
+    s.commit()
+    return {'job_id': job_id}
+
+
+@app.get('/api/jobs/{job_id}')
+def job_status(job_id: str):
+    job = jobs.jobs.get(job_id)
+    if job is None:
+        raise HTTPException(404, 'Không tìm thấy phiên điều tra (máy chủ có thể đã khởi động lại)')
+    return job
+
+
+class ReviewFromDraftIn(BaseModel):
+    user: str
+    txn_id: str
+    reason: str
+    route_to: str
+    required_documents: list[str] = Field(default_factory=list)
+
+
+@app.post('/api/cases/{case_id:path}/review-requests')
+def create_review_request(case_id: str, body: ReviewFromDraftIn, s: Session = Depends(get_session)):
+    """Người dùng bấm xác nhận bản nháp yêu cầu review do agent soạn."""
+    get_case(s, case_id)
+    if body.route_to not in ('ke_toan', 'quan_ly'):
+        raise HTTPException(422, 'Nơi nhận không hợp lệ')
+    rr = ReviewRequest(case_id=case_id, txn_id=body.txn_id, reason=body.reason, route_to=body.route_to,
+                       required_documents=body.required_documents, source='agent', created_by=body.user)
+    s.add(rr)
+    s.add(AuditLog(case_id=case_id, user=body.user, action='tao_yeu_cau_review', detail=body.model_dump()))
+    s.commit()
+    return {'id': rr.id, 'status': rr.status}

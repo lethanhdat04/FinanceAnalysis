@@ -41,6 +41,7 @@ class CaseEngine:
         self.df = add_expense_group(load_pcard()) if df is None else df
         self.by_id = pd.Series(self.df.index, index=self.df['txn_id'])
         self.budgets, approved = load_reference()
+        self.approved = approved or set()
         self.hits = run_rules(self.df, budgets=self.budgets, approved=approved)
         self.hits_by_txn = self.hits.groupby('txn_id')
 

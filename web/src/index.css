@@ -217,6 +217,30 @@ button:disabled { opacity: 0.55; cursor: not-allowed; }
 .error p { margin: 0.25rem 0 0; font-size: var(--step--1); }
 .ok { color: var(--ledger); font-weight: 500; margin: 0.5rem 0 0; }
 
+
+/* hồ sơ điều tra của agent */
+.agent-live { background: var(--sheet); border: 1px dashed var(--rule-strong); border-radius: 4px; padding: 1rem 1.25rem; }
+.agent-live .phase { margin: 0 0 0.5rem; font-weight: 600; color: var(--ledger); }
+.steps { margin: 0; padding-left: 1.25rem; color: var(--muted); }
+.steps li.done { color: var(--ink); }
+.steps li.done::marker { color: var(--ledger); font-weight: 600; }
+.agent-findings { list-style: none; padding: 0; }
+.agent-findings li { margin-bottom: 0.6rem; }
+.assess { font-family: var(--sans); font-size: 0.75rem; font-weight: 600; margin-right: 0.45rem; padding: 0 0.35rem; border-radius: 3px; }
+.as-bad { color: var(--high); background: var(--high-tint); }
+.as-ok { color: var(--ledger); background: var(--ledger-tint); }
+.as-unknown { color: var(--review); background: var(--review-tint); }
+.evidence { display: block; font-family: var(--sans); font-size: var(--step--1); color: var(--muted); }
+.recommend { margin-top: 1.25rem; padding: 0.6rem 0.9rem; border-left: 3px solid var(--ink); background: var(--paper); }
+.recommend h3 { margin-top: 0; }
+.recommend p { margin: 0.2rem 0; }
+.memo .proposal { margin-top: 1rem; font-family: var(--sans); font-size: var(--step-0); }
+.memo-foot details { width: 100%; }
+.memo-foot summary { cursor: pointer; }
+.memo-foot h3 { font-size: var(--step--1); margin: 0.75rem 0 0.25rem; }
+.memo-foot ol { margin: 0; padding-left: 1.2rem; }
+.over { color: var(--high); }
+
 /* ---------------------------------------------------------------- trợ lý */
 .chat { display: grid; gap: 1.5rem; max-width: 52rem; margin-bottom: 1.5rem; }
 .examples { display: grid; gap: 0.25rem; justify-items: start; color: var(--ink-2); }

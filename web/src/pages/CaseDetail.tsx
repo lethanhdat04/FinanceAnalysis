@@ -4,6 +4,7 @@ import { Link, useParams } from 'react-router-dom'
 import { api, fmtDate, money, type CaseDetail as Detail, type Explanation, type Meta, type RuleHit } from '../api'
 import { ErrorNote, LevelTag, RuleCodes, Section, StatusText } from '../components'
 import { useUser } from '../user'
+import AgentPanel from './AgentPanel'
 
 const SEVERITY_RANK = { Cao: 0, 'Trung bình': 1, Thấp: 2 } as const
 const SOURCE_LABEL = { rule: 'Quy tắc', mo_hinh: 'Mô hình', phan_loai: 'Phân loại', quy_che: 'Quy chế' } as const
@@ -61,6 +62,7 @@ export default function CaseDetail() {
         <div className="case-main">
           <Findings d={d} meta={meta.data} />
           <AiMemo d={d} />
+          <AgentPanel d={d} meta={meta.data} />
           <Transactions d={d} meta={meta.data} />
         </div>
         <aside className="case-side">

@@ -99,3 +99,14 @@ def test_stats_and_meta(client):
     st = client.get('/api/stats').json()
     assert st['cases'] == 2 and st['by_level'] == {'Cảnh báo cao': 1, 'Cần review': 1}
     assert client.get('/api/meta').json()['months'] == ['2026-06']
+
+
+def test_investigate_needs_services_and_review_from_draft(client):
+    assert client.post('/api/cases/T|t1/investigate', json={'user': 'kt1'}).status_code == 503
+    assert client.get('/api/jobs/khong-co').status_code == 404
+    body = {'user': 'kt1', 'txn_id': 't1', 'reason': 'Nghi chia nhỏ', 'route_to': 'quan_ly', 'required_documents': ['Hóa đơn']}
+    r = client.post('/api/cases/T|t1/review-requests', json=body)
+    assert r.status_code == 200
+    d = client.get('/api/cases/T|t1/detail').json()
+    assert d['review_requests'][0]['source'] == 'agent'
+    assert client.post('/api/cases/T|t1/review-requests', json={**body, 'route_to': 'ai_do'}).status_code == 422

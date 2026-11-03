@@ -199,3 +199,66 @@ export const fmtMonth = (ym: string) => {
   return `Tháng ${Number(m)}/${y}`
 }
 export const caseUrl = (id: string) => `/ho-so/${enc(id)}`
+
+// ---------------------------------------------------------------- agent điều tra
+export interface AgentStep {
+  step: number
+  tool: string
+  label: string
+  args: Record<string, unknown>
+  error: string | null
+  seconds: number
+}
+
+export interface AgentReport {
+  summary: string
+  findings: { text: string; assessment: 'dang_lo_ngai' | 'co_the_giai_thich' | 'chua_du_thong_tin'; evidence: string[] }[]
+  citations: { article_id: string; quote: string }[]
+  items_to_verify: string[]
+  recommended_action: string
+  recommendation_reason: string
+  draft_review_request: { needed: boolean; route_to: 'ke_toan' | 'quan_ly'; reason: string; required_documents: string[] }
+}
+
+export interface AgentRun {
+  kind?: 'dieu_tra'
+  txn_id: string
+  plan: { check: string; tool: string; why: string }[]
+  trace: AgentStep[]
+  report: AgentReport
+  warnings: string[]
+  revisions: number
+  n_tool_calls: number
+  articles: Record<string, { title: string; text: string }>
+  model: string
+  latency_s: number
+  usage: { prompt_tokens: number; completion_tokens: number; llm_calls: number }
+  created_at?: string
+}
+
+export interface AgentJob {
+  id: string
+  status: 'dang_chay' | 'xong' | 'loi'
+  phase: 'lap_ke_hoach' | 'dieu_tra' | 'viet_ho_so' | 'xong'
+  plan: AgentRun['plan']
+  trace: AgentStep[]
+  result: AgentRun | null
+  error: string | null
+}
+
+export const agentApi = {
+  start: (caseId: string, user: string, role: Role) =>
+    request<{ job_id: string }>(`/api/cases/${enc(caseId)}/investigate`, {
+      method: 'POST',
+      body: JSON.stringify({ user, role }),
+    }),
+  job: (jobId: string) => request<AgentJob>(`/api/jobs/${enc(jobId)}`),
+  createReview: (
+    caseId: string,
+    body: { user: string; txn_id: string; reason: string; route_to: string; required_documents: string[] },
+  ) =>
+    request<{ id: number; status: string }>(`/api/cases/${enc(caseId)}/review-requests`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+}
