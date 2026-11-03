@@ -134,7 +134,7 @@ function Report({ run, d, meta }: { run: AgentRun; d: CaseDetail; meta: Meta }) 
           <div className="proposal">
             <h3>Bản nháp yêu cầu review</h3>
             <p>
-              {r.draft_review_request.reason.replace(/[.s]+$/, '')}. Gửi {r.draft_review_request.route_to === 'quan_ly' ? 'quản lý' : 'kế toán'}; chứng
+              {r.draft_review_request.reason.replace(/[.\s]+$/, '')}. Gửi {r.draft_review_request.route_to === 'quan_ly' ? 'quản lý' : 'kế toán'}; chứng
               từ: {r.draft_review_request.required_documents.join(', ') || 'không'}.
             </p>
             {alreadyCreated || create.isSuccess ? (
