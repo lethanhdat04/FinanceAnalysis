@@ -9,7 +9,7 @@ const FILTERS = ['level', 'status', 'kind', 'month', 'rule', 'q'] as const
 export default function CaseList() {
   const [params, setParams] = useSearchParams()
   const navigate = useNavigate()
-  const page = Number(params.get('page') ?? 1)
+  const page = Math.max(1, Math.floor(Number(params.get('page')) || 1))
   const filters = Object.fromEntries(FILTERS.map((k) => [k, params.get(k) ?? '']).filter(([, v]) => v))
 
   const meta = useQuery({ queryKey: ['meta'], queryFn: api.meta })
@@ -81,6 +81,7 @@ export default function CaseList() {
           <input
             type="search"
             placeholder="Cửa hàng, người chi, đơn vị, mã giao dịch"
+            key={filters.q ?? ''}                 // đổi URL (Quay lại, bấm menu) thì ô tìm kiếm theo URL
             defaultValue={filters.q ?? ''}
             onKeyDown={(e) => e.key === 'Enter' && setFilter('q', e.currentTarget.value.trim())}
             onBlur={(e) => e.currentTarget.value.trim() !== (filters.q ?? '') && setFilter('q', e.currentTarget.value.trim())}
@@ -164,10 +165,10 @@ export default function CaseList() {
                 {list.data.items.map((c) => (
                   <tr
                     key={c.id}
-                    className={c.level === 'Cảnh báo cao' ? 'row-high' : c.level === 'Cần review' ? 'row-review' : 'row-lowered'}
+                    className={`clickable ${c.level === 'Cảnh báo cao' ? 'row-high' : c.level === 'Cần review' ? 'row-review' : 'row-lowered'}`}
                     onClick={() => navigate(caseUrl(c.id))}
                   >
-                    <td>
+                    <td data-label="Mức">
                       <LevelTag level={c.level} />
                     </td>
                     <td className="case-cell">
@@ -179,16 +180,16 @@ export default function CaseList() {
                         {c.cardholder_id.split('|').slice(1).join(' ')} – {c.agency}
                       </span>
                     </td>
-                    <td className="nowrap">{fmtDate(c.tx_date)}</td>
-                    <td className="r num">
+                    <td className="nowrap" data-label="Ngày">{fmtDate(c.tx_date)}</td>
+                    <td className="r num" data-label="Số tiền">
                       {money(c.total_amount)}
                       {c.n_txn > 1 && <span className="sub">{c.n_txn} giao dịch</span>}
                     </td>
-                    <td>
+                    <td data-label="Quy tắc">
                       <RuleCodes codes={c.rules} names={meta.data?.rules} />
                     </td>
-                    <td>{c.has_anomaly ? (c.kind === 'cum_mua_don' ? 'Mua dồn' : 'Bất thường') : ''}</td>
-                    <td>
+                    <td data-label="Mô hình">{c.has_anomaly ? (c.kind === 'cum_mua_don' ? 'Mua dồn' : 'Bất thường') : ''}</td>
+                    <td data-label="Trạng thái">
                       <StatusText status={c.status} />
                     </td>
                   </tr>

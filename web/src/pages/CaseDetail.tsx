@@ -10,7 +10,7 @@ const SEVERITY_RANK = { Cao: 0, 'Trung bình': 1, Thấp: 2 } as const
 const SOURCE_LABEL = { rule: 'Quy tắc', mo_hinh: 'Mô hình', phan_loai: 'Phân loại', quy_che: 'Quy chế' } as const
 
 export default function CaseDetail() {
-  const id = decodeURIComponent(useParams().id ?? '')
+  const id = useParams().id ?? ''          // react-router đã giải mã tham số
   const { user } = useUser()
   const meta = useQuery({ queryKey: ['meta'], queryFn: api.meta })
   const detail = useQuery({ queryKey: ['case', id, user.role], queryFn: () => api.caseDetail(id, user.role) })
@@ -62,11 +62,11 @@ export default function CaseDetail() {
         <div className="case-main">
           <Findings d={d} meta={meta.data} />
           <AiMemo d={d} />
-          <AgentPanel d={d} meta={meta.data} />
+          <AgentPanel key={c.id} d={d} meta={meta.data} />
           <Transactions d={d} meta={meta.data} />
         </div>
         <aside className="case-side">
-          <ActionPanel d={d} meta={meta.data} />
+          <ActionPanel key={`${c.id}|${user.role}`} d={d} meta={meta.data} />
           <History d={d} meta={meta.data} />
         </aside>
       </div>
@@ -408,7 +408,7 @@ function History({ d, meta }: { d: Detail; meta: Meta }) {
             {Object.keys(x.signal_feedback).length > 0 && (
               <span className="sub">
                 {Object.entries(x.signal_feedback)
-                  .map(([k, v]) => `${k === 'mo_hinh' ? 'Mô hình' : k}: ${meta.signal_verdicts[v].toLowerCase()}`)
+                  .map(([k, v]) => `${k === 'mo_hinh' ? 'Mô hình' : k}: ${(meta.signal_verdicts[v] ?? v).toLowerCase()}`)
                   .join('; ')}
               </span>
             )}

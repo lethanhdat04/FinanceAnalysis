@@ -1,4 +1,5 @@
-import { NavLink, Route, Routes } from 'react-router-dom'
+import { NavLink, Route, Routes, useLocation } from 'react-router-dom'
+import { PageErrorBoundary } from './components'
 import Assistant from './pages/Assistant'
 import Calibration from './pages/Calibration'
 import CaseDetail from './pages/CaseDetail'
@@ -35,6 +36,7 @@ export default function App() {
         </label>
       </aside>
       <main className="page">
+        <PageErrorBoundary key={useLocation().pathname}>
         <Routes>
           <Route path="/" element={<CaseList />} />
           <Route path="/ho-so/:id" element={<CaseDetail />} />
@@ -43,6 +45,7 @@ export default function App() {
           <Route path="/hieu-chinh" element={<Calibration />} />
           <Route path="*" element={<p className="empty">Không tìm thấy trang này.</p>} />
         </Routes>
+        </PageErrorBoundary>
       </main>
     </div>
   )

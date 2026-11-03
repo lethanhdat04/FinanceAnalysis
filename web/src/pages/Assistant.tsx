@@ -1,5 +1,5 @@
-import { useMutation } from '@tanstack/react-query'
-import { useRef, useState } from 'react'
+import { useMutation, useQueryClient } from '@tanstack/react-query'
+import { useState } from 'react'
 import Markdown from 'react-markdown'
 import { api, type ChatReply } from '../api'
 import { ErrorNote } from '../components'
@@ -21,22 +21,33 @@ const EXAMPLES = [
 
 type Turn = { q: string; reply?: ChatReply; error?: unknown }
 
+// crypto.randomUUID chỉ có trên https / localhost; mở bằng IP trong mạng nội bộ thì dùng cách khác
+const newSessionId = () =>
+  typeof crypto !== 'undefined' && 'randomUUID' in crypto
+    ? crypto.randomUUID()
+    : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`
+
 export default function Assistant() {
   const { user } = useUser()
-  const session = useRef(crypto.randomUUID())
+  const [sessionId] = useState(newSessionId)
+  const qc = useQueryClient()
   const [turns, setTurns] = useState<Turn[]>([])
   const [text, setText] = useState('')
   const [confirmed, setConfirmed] = useState<Record<string, number>>({})
 
   const ask = useMutation({
-    mutationFn: (q: string) => api.chat(session.current, q, user.id),
+    mutationFn: (q: string) => api.chat(sessionId, q, user.id),
     onMutate: (q) => setTurns((t) => [...t, { q }]),
     onSuccess: (reply) => setTurns((t) => t.map((x, i) => (i === t.length - 1 ? { ...x, reply } : x))),
     onError: (error) => setTurns((t) => t.map((x, i) => (i === t.length - 1 ? { ...x, error } : x))),
   })
   const confirm = useMutation({
-    mutationFn: (pid: string) => api.confirmProposal(pid, session.current, user.id),
-    onSuccess: (r, pid) => setConfirmed((c) => ({ ...c, [pid]: r.id })),
+    mutationFn: (pid: string) => api.confirmProposal(pid, sessionId, user.id),
+    onSuccess: (r, pid) => {
+      setConfirmed((c) => ({ ...c, [pid]: r.id }))
+      qc.invalidateQueries({ queryKey: ['review-requests'] })
+      qc.invalidateQueries({ queryKey: ['case'] })
+    },
   })
 
   const submit = (q: string) => {

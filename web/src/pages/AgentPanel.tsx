@@ -31,16 +31,19 @@ export default function AgentPanel({ d, meta }: { d: CaseDetail; meta: Meta }) {
     queryKey: ['job', jobId],
     queryFn: () => agentApi.job(jobId!),
     enabled: Boolean(jobId),
-    refetchInterval: (q) => (q.state.data?.status === 'dang_chay' ? 2500 : false),
+    // dừng hỏi khi job xong, lỗi, hoặc không còn trên máy chủ (vd máy chủ khởi động lại thì trả 404)
+    refetchInterval: (q) => (q.state.error || q.state.data?.status !== 'dang_chay' ? false : 2500),
+    retry: false,
   })
   const finished = Boolean(jobId && job.data && job.data.status !== 'dang_chay')
+  const lost = Boolean(jobId && job.error)
   useEffect(() => {
     if (!finished) return
     if (job.data?.status === 'xong') setJobId(null)       // giữ job lỗi để hiện thông báo
     qc.invalidateQueries({ queryKey: ['case', d.case.id] })
   }, [finished, job.data?.status, qc, d.case.id])
 
-  const running = job.data?.status === 'dang_chay' || start.isPending
+  const running = (!lost && job.data?.status === 'dang_chay') || start.isPending
   return (
     <Section
       title="Hồ sơ điều tra của agent"
@@ -52,6 +55,9 @@ export default function AgentPanel({ d, meta }: { d: CaseDetail; meta: Meta }) {
     >
       {start.error && <ErrorNote error={start.error} />}
       {job.data?.status === 'loi' && <ErrorNote error={new Error(job.data.error ?? 'Agent gặp lỗi')} />}
+      {lost && (
+        <ErrorNote error={new Error('Không theo dõi được phiên điều tra (máy chủ có thể đã khởi động lại). Bấm điều tra lại để chạy phiên mới.')} />
+      )}
       {running && job.data && <Progress job={job.data} />}
       {!running && !saved && (
         <p className="empty">
@@ -98,7 +104,10 @@ function Report({ run, d, meta }: { run: AgentRun; d: CaseDetail; meta: Meta }) 
         route_to: r.draft_review_request.route_to,
         required_documents: r.draft_review_request.required_documents,
       }),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['case', d.case.id] }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['case', d.case.id] })
+      qc.invalidateQueries({ queryKey: ['review-requests'] })
+    },
   })
   const alreadyCreated = d.review_requests.some((x) => x.source === 'agent' && x.reason === r.draft_review_request.reason)
   const action = r.recommended_action === 'khong_de_xuat' ? null : meta.actions[r.recommended_action]?.label

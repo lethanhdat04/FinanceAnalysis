@@ -1,4 +1,4 @@
-import type { ReactNode } from 'react'
+import { Component, type ReactNode } from 'react'
 import { ApiError } from './api'
 
 export function LevelTag({ level }: { level: string }) {
@@ -51,4 +51,21 @@ export function Section({ title, aside, children }: { title: string; aside?: Rea
       {children}
     </section>
   )
+}
+
+/** Lỗi khi hiển thị một trang chỉ làm hỏng trang đó (khung, menu vẫn dùng được); chuyển trang thì thử lại. */
+export class PageErrorBoundary extends Component<{ children: ReactNode }, { error: Error | null }> {
+  state = { error: null as Error | null }
+  static getDerivedStateFromError(error: Error) {
+    return { error }
+  }
+  render() {
+    if (!this.state.error) return this.props.children
+    return (
+      <div className="error" role="alert">
+        <strong>Trang này gặp lỗi khi hiển thị: {this.state.error.message}</strong>
+        <p>Chọn trang khác ở menu bên trái hoặc tải lại trang. Dữ liệu đã lưu không bị ảnh hưởng.</p>
+      </div>
+    )
+  }
 }
