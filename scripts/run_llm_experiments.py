@@ -199,7 +199,16 @@ def run_agent_compare(model: str):
                                        signals=case['anomaly']['signals'], groups=[case['expense_group']['group']])
         single = explain_case(case, chunks, client=client, model=model)
         allowed = ['yeu_cau_bo_sung', 'chuyen_phe_duyet'] + ([] if case['risk']['final_level'] == 'Cảnh báo cao' else ['chap_nhan'])
-        agent = InvestigationAgent(eng, ret, client=client, model=model, decisions_fn=past_decisions).run(s['txn_id'], allowed, labels)
+        try:
+            agent = InvestigationAgent(eng, ret, client=client, model=model,
+                                       decisions_fn=past_decisions).run(s['txn_id'], allowed, labels)
+        except RuntimeError:
+            raise                                # hết hạn mức: dừng, lần sau chạy tiếp
+        except Exception as e:                   # agent thất bại (vd model sinh lời gọi công cụ hỏng): ghi nhận là kết quả
+            append(path, {'txn_id': s['txn_id'], 'kind': s['kind'], 'case': case, 'single': single, 'agent': None,
+                          'agent_error': f'{type(e).__name__}: {e}'[:500]})
+            print(f"  {s['txn_id']} {s['kind']}: một bước {single['latency_s']}s | agent THẤT BẠI: {type(e).__name__}")
+            continue
         append(path, {'txn_id': s['txn_id'], 'kind': s['kind'], 'case': case, 'single': single, 'agent': agent})
         print(f"  {s['txn_id']} {s['kind']}: một bước {single['latency_s']}s | agent {agent['latency_s']}s, "
               f"{agent['n_tool_calls']} tra cứu, {agent['revisions']} lần sửa, {len(agent['warnings'])} cảnh báo")
